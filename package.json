@@ -9,6 +9,7 @@
     "server": "node src/server.js",
     "build:win": "electron-builder --win nsis",
     "build:portable": "electron-builder --win portable",
+    "release": "node scripts/publish-release.mjs",
     "check": "node scripts/static-check.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "verify": "npm run check && npm run smoke && npm audit --omit=dev"
@@ -37,7 +38,8 @@
       "provider": "github",
       "owner": "stevenchacon733-arch",
       "repo": "qubiq-control",
-      "private": true
+      "private": true,
+      "releaseType": "release"
     },
     "files": [
       "desktop/**/*",
