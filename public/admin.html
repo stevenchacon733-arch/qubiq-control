@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Qubiq Control</title>
+  <link rel="stylesheet" href="/app.css?v=1.0.0">
+  <link rel="stylesheet" href="/admin-extra.css?v=1.0.0">
+  <link rel="stylesheet" href="/qubiq.css?v=1.0.0">
+</head>
+<body>
+<div id="login" class="login-overlay hidden">
+  <form id="loginForm" class="card login-card">
+    <div class="brand"><span class="brand-icon">Q</span><b>Qubiq</b> <span>CONTROL</span></div>
+    <div id="loginRoleTabs" class="tabs login-role-tabs hidden">
+      <button type="button" class="tab active" data-role="admin">Administrador</button>
+      <button type="button" class="tab" data-role="kiosk">Recepción</button>
+    </div>
+    <h2 id="loginRoleTitle" style="margin-top:24px">Administrador</h2>
+    <label>Contraseña<input id="loginPassword" type="password" required autocomplete="current-password"></label>
+    <button class="btn">Ingresar</button>
+    <div id="loginMsg" class="message"></div>
+  </form>
+</div>
+
+<main class="shell">
+  <header class="topbar">
+    <div>
+      <div class="brand"><span class="brand-icon">Q</span><b>Qubiq</b> <span>CONTROL</span></div>
+      <div class="muted" id="businessLabel">Sistema local</div>
+    </div>
+    <button id="logout" class="btn secondary">Cerrar sesión</button>
+  </header>
+
+  <div id="licenseBanner" class="license-banner hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dashboard">Hoy</button>
+    <button class="tab" data-tab="employees">Empleados</button>
+    <button class="tab" data-tab="schedules">Horarios</button>
+    <button class="tab" data-tab="payroll">Pre-planilla</button>
+    <button class="tab" data-tab="settings">Configuración</button>
+  </nav>
+
+  <section id="dashboard" class="panel active">
+    <div class="grid stats">
+      <div class="card stat"><span class="muted">Empleados</span><strong id="sEmployees">0</strong></div>
+      <div class="card stat"><span class="muted">Presentes</span><strong id="sPresent">0</strong></div>
+      <div class="card stat"><span class="muted">Tardías</span><strong id="sLate">0</strong></div>
+      <div class="card stat"><span class="muted">Jornadas cerradas</span><strong id="sCompleted">0</strong></div>
+    </div>
+    <div id="systemStatus" class="card system-card">
+      <div class="section-head"><div><h2>Estado del sistema</h2><span class="muted">Servicios críticos de Qubiq Control</span></div><button id="createBackup" class="btn secondary">Crear backup</button></div>
+      <div class="system-grid">
+        <div><span id="stDatabase" class="status-dot good"></span><strong> Base de datos</strong><small class="muted">Operativa</small></div>
+        <div><span id="stMail" class="status-dot"></span><strong> Correo</strong><small id="stMailText" class="muted">Revisando...</small></div>
+        <div><span id="stSheets" class="status-dot"></span><strong> Google Sheets</strong><small id="stSheetsText" class="muted">Revisando...</small><button id="googleConnect" type="button" class="mini-btn google-connect">Conectar Google</button><input id="googleClientFile" type="file" accept="application/json,.json" hidden></div>
+        <div><span id="stBackup" class="status-dot"></span><strong> Copia de seguridad</strong><small id="stBackupText" class="muted">Revisando...</small></div>
+        <div><span id="stLicense" class="status-dot"></span><strong> Licencia</strong><small id="stLicenseText" class="muted">Revisando...</small></div>
+      </div>
+    </div>
+    <div class="grid layout">
+      <div class="card">
+        <div class="section-head">
+          <div><h2>Asistencia</h2><span class="muted" id="today"></span></div>
+          <div class="button-row compact"><input id="overviewDate" type="date" aria-label="Fecha de asistencia"><button class="btn secondary" id="refresh">Actualizar</button></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Estado</th><th>Horas</th></tr></thead>
+            <tbody id="attendanceBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <aside class="card qr-wrap">
+        <h2>QR de asistencia</h2>
+        <p class="muted">Cambia automáticamente. El teléfono debe estar conectado a la red local.</p>
+        <img id="qr" alt="QR dinámico">
+        <p>Nuevo QR en <span id="qrTimer" class="qr-timer">30</span>s</p>
+        <div class="info-box"><small class="muted">No compartir capturas. El código expira rápidamente y la marcación se valida en el servidor.</small></div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="employees" class="panel">
+    <div class="split">
+      <form id="employeeForm" class="card">
+        <h2>Nuevo empleado</h2>
+        <label>Código de marcación<input name="employeeCode" maxlength="20" minlength="2" pattern="[A-Za-z0-9_-]{2,20}" required placeholder="EMP001"></label>
+        <label>Nombre completo<input name="name" maxlength="120" required></label>
+        <div class="form-row">
+          <label>Cédula<input name="nationalId" inputmode="numeric" pattern="[0-9]{6,20}" maxlength="20" required></label>
+          <label>Teléfono<input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{8,15}" maxlength="15"></label>
+        </div>
+        <label>Correo electrónico<input name="email" type="email" required placeholder="empleado@correo.com"></label>
+        <label>Fecha de ingreso<input name="hireDate" type="date"></label>
+        <label>Puesto<input name="position" maxlength="80" placeholder="Dependiente, regente..."></label>
+        <label>PIN de marcación<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required placeholder="4-8 dígitos"></label>
+        <label>Horario<select name="scheduleId" id="employeeSchedule"><option value="">Sin horario</option></select></label>
+        <button class="btn">Crear empleado</button>
+        <div id="employeeMsg" class="message"></div>
+      </form>
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>Personal</h2>
+            <span class="muted">Códigos únicos usados para registrar asistencia.</span>
+          </div>
+          <div class="button-row compact"><input id="employeeSearch" type="search" placeholder="Buscar personal..." aria-label="Buscar empleados"><button class="btn secondary" id="reloadEmployees">Actualizar</button></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Código de marcación</th><th>Nombre</th><th>Puesto</th><th>Horario</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody id="employeeBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="schedules" class="panel">
+    <div class="split">
+      <form id="scheduleForm" class="card">
+        <h2>Nuevo horario</h2>
+        <label>Nombre del horario<input name="name" maxlength="60" required placeholder="Ej. Turno mañana"></label>
+        <div class="form-row">
+          <label>Entrada<input name="startTime" type="time" value="09:00" required></label>
+          <label>Salida<input name="endTime" type="time" value="17:00" required></label>
+        </div>
+        <label>Tolerancia (min)<input name="toleranceMinutes" type="number" min="0" max="120" value="5"></label>
+        <p class="muted">Creá los horarios que necesite tu negocio, con las horas de entrada y salida que quieras. El descanso semanal se revisa automáticamente.</p>
+        <button class="btn">Crear horario</button>
+        <div id="scheduleMsg" class="message"></div>
+      </form>
+      <div class="card">
+        <h2>Horarios activos</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Nombre</th><th>Entrada</th><th>Salida</th><th>Tolerancia</th><th>Acciones</th></tr></thead>
+            <tbody id="scheduleBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="payroll" class="panel">
+    <div class="card">
+      <h2>Pre-planilla</h2>
+      <p class="muted">Revisá la quincena, resolvé descansos dudosos y luego sincronizá la plantilla de Google Sheets.</p>
+      <div class="form-row">
+        <label>Desde<input id="payFrom" type="date"></label>
+        <label>Hasta<input id="payTo" type="date"></label>
+      </div>
+      <div class="button-row">
+        <button id="loadPayroll" class="btn">Generar</button>
+        <button id="downloadCsv" class="btn secondary">Descargar CSV</button>
+        <button id="syncSheets" class="btn secondary">Sincronizar Google Sheets</button>
+      </div>
+      <div id="payMsg" class="message"></div>
+      <div id="restReview" class="review-box hidden"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Código</th><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Tardanza</th><th>Horas</th></tr></thead>
+          <tbody id="payBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings" class="panel">
+    <div class="settings-grid">
+      <form id="companySettingsForm" class="card">
+        <div class="section-head"><div><h2>Identidad del negocio</h2><span class="muted">Datos que identifican esta instalación de Qubiq Control.</span></div></div>
+        <label>Nombre del negocio<input name="businessName" maxlength="160" required></label>
+        <label>Sucursal<input name="branchName" maxlength="160" required></label>
+        <label>Administrador<input name="adminName" maxlength="120" required></label>
+        <label>Correo del administrador<input name="adminEmail" type="email" maxlength="160"></label>
+        <button class="btn">Guardar identidad</button><div id="companySettingsMsg" class="message"></div>
+      </form>
+      <div class="settings-stack">
+        <form id="mailSettingsForm" class="card"><h2>Correo automático de asistencia</h2><p class="muted">Cuenta independiente para enviar confirmaciones automáticas. Las credenciales se guardan cifradas en esta instalación.</p>
+          <label>Proveedor<select id="mailProviderSettings"><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="custom">Otro proveedor</option></select></label>
+          <label>Servidor SMTP<input name="host" placeholder="smtp.gmail.com" maxlength="200"></label>
+          <div class="form-row"><label>Puerto<input name="port" type="number" min="1" max="65535" value="587"></label><label>Seguridad<select name="secure"><option value="false">STARTTLS / 587</option><option value="true">SSL / 465</option></select></label></div>
+          <label>Correo remitente<input name="user" type="email" maxlength="200" placeholder="asistencia@empresa.com"></label><label>Contraseña de aplicación<input name="pass" type="password" maxlength="300" autocomplete="new-password" placeholder="Obligatoria la primera vez"></label>
+          <label>Remitente visible<input name="from" type="email" maxlength="200"></label><button class="btn">Guardar correo automático</button><div id="mailSettingsMsg" class="message"></div>
+        </form>
+        <div class="card"><h2>Google Workspace</h2><p class="muted">Conectá Drive y Sheets con la cuenta del negocio.</p><div id="settingsGoogleAccount" class="info-box">Sin conectar</div><div class="button-row"><button id="settingsGoogleConnect" type="button" class="btn">Conectar Google</button><button id="settingsMailTest" type="button" class="btn secondary">Probar correo</button></div></div>
+        <form id="kioskSettingsForm" class="card"><h2>Acceso de Recepción</h2><p class="muted">Un acceso aparte para que el personal vea solo el QR de asistencia, sin poder entrar al resto del sistema.</p>
+          <div id="kioskInfo" class="info-box"><span id="kioskInfoDot" class="status-dot"></span> <span id="kioskInfoText">No configurado.</span></div>
+          <label>Contraseña de Recepción<input name="kioskPassword" type="password" maxlength="200" autocomplete="new-password" placeholder="Mínimo 6 caracteres"></label>
+          <div class="button-row"><button class="btn">Guardar contraseña</button><button id="kioskDisable" type="button" class="btn danger">Desactivar acceso</button></div>
+          <div id="kioskSettingsMsg" class="message"></div>
+        </form>
+        <form id="licenseSettingsForm" class="card"><h2>Licencia</h2><p class="muted">Verificamos la licencia periódicamente contra el servidor de Qubiq. La clave se guarda cifrada en esta instalación.</p>
+          <div id="licenseInfo" class="info-box"><span id="licenseInfoDot" class="status-dot"></span> <span id="licenseInfoText">Sin licencia configurada.</span></div>
+          <label>Clave de licencia<input name="licenseKey" type="text" maxlength="200" autocomplete="off" placeholder="QBQ-XXXX-XXXX-XXXX-XXXX" pattern="QBQ-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}" title="Formato: QBQ-XXXX-XXXX-XXXX-XXXX"></label>
+          <div class="button-row"><button class="btn">Activar licencia</button><button id="licenseRecheck" type="button" class="btn secondary">Verificar ahora</button></div>
+          <div id="licenseSettingsMsg" class="message"></div>
+        </form>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+<div id="employeeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editEmployeeTitle">
+  <form id="editEmployeeForm" class="card modal-card">
+    <div class="section-head">
+      <div>
+        <h2 id="editEmployeeTitle">Editar empleado</h2>
+        <span class="muted">Dejá el PIN vacío para conservar el actual.</span>
+      </div>
+      <button type="button" id="closeEmployeeModal" class="icon-btn" aria-label="Cerrar">×</button>
+    </div>
+    <input type="hidden" name="id">
+    <label>Código de marcación<input name="employeeCode" maxlength="20" minlength="2" pattern="[A-Za-z0-9_-]{2,20}" required></label>
+    <label>Nombre completo<input name="name" maxlength="120" required></label>
+    <div class="form-row">
+      <label>Cédula<input name="nationalId" inputmode="numeric" pattern="[0-9]{6,20}" maxlength="20" required></label>
+      <label>Teléfono<input name="phone" type="tel" inputmode="numeric" pattern="[0-9]{8,15}" maxlength="15"></label>
+    </div>
+    <label>Correo electrónico<input name="email" type="email" required></label>
+    <label>Fecha de ingreso<input name="hireDate" type="date"></label>
+    <label>Puesto<input name="position" maxlength="80"></label>
+    <label>Nuevo PIN (opcional)<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="4-8 dígitos"></label>
+    <label>Horario<select name="scheduleId" id="editEmployeeSchedule"><option value="">Sin horario</option></select></label>
+    <div class="danger-zone">
+      <div><strong>Eliminar de la lista</strong><br><small class="muted">Conserva el historial de asistencia y planillas anteriores.</small></div>
+      <button type="button" id="deleteEmployee" class="btn danger">Eliminar empleado</button>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="cancelEmployeeEdit" class="btn secondary">Cancelar</button>
+      <button class="btn">Guardar cambios</button>
+    </div>
+    <div id="editEmployeeMsg" class="message"></div>
+  </form>
+</div>
+
+<div id="scheduleModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editScheduleTitle">
+  <form id="editScheduleForm" class="card modal-card">
+    <div class="section-head">
+      <div><h2 id="editScheduleTitle">Editar horario</h2></div>
+      <button type="button" id="closeScheduleModal" class="icon-btn" aria-label="Cerrar">×</button>
+    </div>
+    <input type="hidden" name="id">
+    <label>Nombre del horario<input name="name" maxlength="60" required></label>
+    <div class="form-row">
+      <label>Entrada<input name="startTime" type="time" required></label>
+      <label>Salida<input name="endTime" type="time" required></label>
+    </div>
+    <label>Tolerancia (min)<input name="toleranceMinutes" type="number" min="0" max="120" required></label>
+    <div class="modal-actions">
+      <button type="button" id="cancelScheduleEdit" class="btn secondary">Cancelar</button>
+      <button class="btn">Guardar cambios</button>
+    </div>
+    <div id="editScheduleMsg" class="message"></div>
+  </form>
+</div>
+
+<script type="module" src="/admin.js?v=1.0.0"></script>
+</body>
+</html>
+

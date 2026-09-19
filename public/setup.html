@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Configurar Qubiq Control</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/qubiq.css">
+</head>
+<body class="setup-page">
+<main class="setup-shell">
+  <aside class="setup-brand">
+    <div class="qubiq-logo"><span>Q</span><div><b>Qubiq Control</b><small>Tu equipo. Tu tiempo. Bajo control.</small></div></div>
+    <div class="setup-copy"><span class="eyebrow">CONFIGURACIÓN INICIAL</span><h1>Prepará Qubiq para tu negocio.</h1><p>Una sola instalación, configurada con la identidad, administrador e integraciones de cada empresa.</p></div>
+    <div class="setup-trust"><span>✓ Datos locales protegidos</span><span>✓ QR dinámico</span><span>✓ Google y correo configurables</span></div>
+  </aside>
+  <section class="setup-card">
+    <div class="setup-progress"><i class="active"></i><i></i><i></i><i></i></div>
+    <form id="setup">
+      <section class="wizard-step active" data-step="0">
+        <span class="step-kicker">Paso 1 de 4</span><h2>Datos del negocio</h2><p>Esta información identifica la instalación.</p>
+        <label>Nombre del negocio<input id="businessName" maxlength="160" required placeholder="Ej. Clínica Central"></label>
+        <label>Sucursal<input id="branchName" maxlength="160" required value="Sucursal principal"></label>
+        <button type="button" class="btn next">Continuar</button>
+      </section>
+      <section class="wizard-step" data-step="1">
+        <span class="step-kicker">Paso 2 de 4</span><h2>Administrador principal</h2><p>Esta cuenta administra Qubiq Control.</p>
+        <label>Nombre<input id="adminName" maxlength="120" required placeholder="Administrador"></label>
+        <label>Correo administrativo<input id="adminEmail" type="email" maxlength="160" placeholder="administracion@empresa.com"></label>
+        <label>Contraseña<input id="password" type="password" minlength="10" required autocomplete="new-password"></label>
+        <label>Confirmar contraseña<input id="confirm" type="password" minlength="10" required autocomplete="new-password"></label>
+        <div class="password-rules" aria-live="polite">
+          <span id="pwRuleLength" class="password-rule">○ Mínimo 10 caracteres</span>
+          <span id="pwRuleLetter" class="password-rule">○ Al menos una letra</span>
+          <span id="pwRuleNumber" class="password-rule">○ Al menos un número</span>
+          <span id="pwRuleMatch" class="password-rule">○ Las contraseñas coinciden</span>
+        </div>
+        <div id="passwordStepMsg" class="message"></div>
+        <div class="wizard-actions"><button type="button" class="btn secondary back">Atrás</button><button id="adminNext" type="button" class="btn next" disabled>Continuar</button></div>
+      </section>
+      <section class="wizard-step" data-step="2">
+        <span class="step-kicker">Paso 3 de 4</span><h2>Correo automático de asistencia</h2><p>Este correo es independiente del correo administrativo y de la cuenta de Google Sheets.</p>
+        <label>Proveedor<select id="mailProvider"><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="custom">Otro proveedor</option></select></label>
+        <label>Correo remitente<input id="mailUser" type="email" maxlength="200" placeholder="asistencia@empresa.com"></label>
+        <label>Contraseña de aplicación<input id="mailPass" type="password" maxlength="300" autocomplete="new-password" placeholder="Contraseña de aplicación del correo"></label>
+        <div id="customMailFields" class="form-row hidden">
+          <label>Servidor SMTP<input id="mailHost" maxlength="200" placeholder="smtp.empresa.com"></label>
+          <label>Puerto<input id="mailPort" type="number" min="1" max="65535" value="587"></label>
+        </div>
+        <label class="check-row"><input id="skipMail" type="checkbox"> Configurar el correo automático después</label>
+        <div class="info-box"><small>Qubiq usa este correo para enviar confirmaciones automáticas de entrada y salida a los empleados. Para Gmail se recomienda usar una contraseña de aplicación.</small></div>
+        <div class="wizard-actions"><button type="button" class="btn secondary back">Atrás</button><button type="button" class="btn next">Continuar</button></div>
+      </section>
+      <section class="wizard-step" data-step="3">
+        <span class="step-kicker">Paso 4 de 4</span><h2>Todo listo</h2><p>Revisá la instalación antes de comenzar.</p>
+        <div class="setup-summary"><div><span>Negocio</span><strong id="sumBusiness">—</strong></div><div><span>Sucursal</span><strong id="sumBranch">—</strong></div><div><span>Administrador</span><strong id="sumAdmin">—</strong></div><div><span>Correo automático</span><strong id="sumMail">Pendiente</strong></div></div>
+        <div class="info-box"><strong>Google Sheets</strong><p>Después de entrar, conectá la cuenta de Google del negocio desde Configuración. Puede ser distinta del correo automático de asistencia.</p></div>
+        <div id="msg" class="message"></div>
+        <div class="wizard-actions"><button type="button" class="btn secondary back">Atrás</button><button id="finish" class="btn">Finalizar configuración</button></div>
+      </section>
+    </form>
+  </section>
+</main>
+<script src="/setup.js?v=1.0.1" defer></script>
+</body></html>

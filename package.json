@@ -1,0 +1,69 @@
+{
+  "name": "qubiq-control",
+  "version": "1.0.1",
+  "description": "Qubiq Control - control inteligente de asistencia, personal y automatización con QR.",
+  "type": "module",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node src/server.js",
+    "build:win": "electron-builder --win nsis",
+    "build:portable": "electron-builder --win portable",
+    "check": "node scripts/static-check.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
+    "verify": "npm run check && npm run smoke && npm audit --omit=dev"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "express": "5.1.0",
+    "googleapis": "^181.0.0",
+    "nodemailer": "^10.0.10",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^44.4.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.qubiq.control",
+    "productName": "Qubiq Control",
+    "directories": {
+      "output": "release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "stevenchacon733-arch",
+      "repo": "qubiq-control",
+      "private": true
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "public/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "artifactName": "Qubiq Control Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Qubiq Control",
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "asar": true,
+    "copyright": "Copyright © 2026 Qubiq"
+  },
+  "author": "Qubiq",
+  "private": true,
+  "license": "UNLICENSED"
+}

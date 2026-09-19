@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Qubiq Control · Recepción</title>
+  <link rel="stylesheet" href="/app.css?v=1.0.0">
+  <link rel="stylesheet" href="/admin-extra.css?v=1.0.0">
+  <link rel="stylesheet" href="/qubiq.css?v=1.0.0">
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div>
+      <div class="brand"><span class="brand-icon">Q</span><b>Qubiq</b> <span>CONTROL</span></div>
+      <div class="muted" id="businessLabel">Recepción</div>
+    </div>
+    <button id="logout" class="btn secondary">Cerrar sesión</button>
+  </header>
+  <aside class="card qr-wrap kiosk-qr">
+    <h2>QR de asistencia</h2>
+    <p class="muted">Cambia automáticamente. El teléfono debe estar conectado a la red local.</p>
+    <img id="qr" alt="QR dinámico">
+    <p>Nuevo QR en <span id="qrTimer" class="qr-timer">30</span>s</p>
+    <div id="kioskMsg" class="message"></div>
+    <div class="info-box"><small class="muted">No compartir capturas. El código expira rápidamente y la marcación se valida en el servidor.</small></div>
+  </aside>
+</main>
+<script type="module" src="/kiosk.js?v=1.0.0"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+release/
+.testdata*/
+.smoke-*/
+data/
+*.env
+*.db
+*.db-shm
+*.db-wal
+_backups/
