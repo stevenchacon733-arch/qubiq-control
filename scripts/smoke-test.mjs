@@ -2,6 +2,27 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
+import { inflateRawSync } from 'node:zlib';
+
+function unzip(buffer) {
+  const files = new Map();
+  let offset = 0;
+  while (offset + 30 <= buffer.length && buffer.readUInt32LE(offset) === 0x04034b50) {
+    const method = buffer.readUInt16LE(offset + 8);
+    const compressed = buffer.readUInt32LE(offset + 18);
+    const uncompressed = buffer.readUInt32LE(offset + 22);
+    const nameLength = buffer.readUInt16LE(offset + 26);
+    const extraLength = buffer.readUInt16LE(offset + 28);
+    const name = buffer.subarray(offset + 30, offset + 30 + nameLength).toString('utf8');
+    const start = offset + 30 + nameLength + extraLength;
+    const data = buffer.subarray(start, start + compressed);
+    const content = method === 8 ? inflateRawSync(data) : data;
+    assert.equal(content.length, uncompressed, `Tamaño inesperado en ${name} del libro de Excel.`);
+    files.set(name, content);
+    offset = start + compressed;
+  }
+  return files;
+}
 
 const root = resolve(new URL('..', import.meta.url).pathname.replace(/^\/(.:)/, '$1'));
 const dataDir = resolve(root, `.smoke-${Date.now()}`);
@@ -159,6 +180,31 @@ try {
   result = await request(`/api/admin/payroll?from=${today}&to=${today}`);
   assert.equal(result.response.status, 200);
   assert.ok(Array.isArray(result.body) && result.body.length === 1);
+
+  result = await request(`/api/admin/payroll.xlsx?from=${today}&to=${today}`);
+  assert.equal(result.response.status, 200);
+  assert.match(result.response.headers.get('content-type') || '', /spreadsheetml\.sheet/);
+  assert.match(result.response.headers.get('content-disposition') || '', /filename="Planilla .+\.xlsx"/);
+  const workbookFiles = unzip(Buffer.from(result.body));
+  for (const part of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels',
+    'xl/styles.xml', 'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml']) {
+    assert.ok(workbookFiles.has(part), `Falta ${part} en el libro de Excel.`);
+  }
+  const workbookXml = workbookFiles.get('xl/workbook.xml').toString('utf8');
+  assert.match(workbookXml, /<sheet name="Tarifas"/);
+  assert.match(workbookXml, /<sheet name="1-Persona"/);
+  const ratesXml = workbookFiles.get('xl/worksheets/sheet1.xml').toString('utf8');
+  assert.match(ratesXml, /123456789/, 'La hoja Tarifas debe listar la cédula del empleado.');
+  assert.match(ratesXml, /Salario por hora/);
+  const voucherXml = workbookFiles.get('xl/worksheets/sheet2.xml').toString('utf8');
+  assert.match(voucherXml, /COMPROBANTE DE PAGO-CONTROL DE HORAS LABORADAS/);
+  assert.match(voucherXml, /VLOOKUP\(&quot;123456789&quot;,Tarifas!\$A\$5/, 'El comprobante debe buscar la tarifa por cédula.');
+  assert.match(voucherXml, /TOTAL POR QUINCENA/);
+  assert.match(voucherXml, /Monto a Pagar/);
+  assert.equal(/FARMACOVA/i.test(voucherXml), false);
+
+  result = await request(`/api/admin/payroll.xlsx?from=${today}&to=2020-01-01`);
+  assert.equal(result.response.status, 400);
 
   result = await request('/api/admin/company', { method: 'PATCH', body: { businessName: 'X' } });
   assert.equal(result.response.status, 400);

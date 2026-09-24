@@ -147,15 +147,22 @@
   <section id="payroll" class="panel">
     <div class="card">
       <h2>Pre-planilla</h2>
-      <p class="muted">Revisá la quincena, resolvé descansos dudosos y luego sincronizá la plantilla de Google Sheets.</p>
+      <p class="muted">Revisá la quincena, resolvé descansos dudosos y descargá el libro de Excel con un comprobante por empleado.</p>
       <div class="form-row">
         <label>Desde<input id="payFrom" type="date"></label>
         <label>Hasta<input id="payTo" type="date"></label>
       </div>
       <div class="button-row">
         <button id="loadPayroll" class="btn">Generar</button>
+        <button id="downloadXlsx" class="btn">Descargar Excel</button>
         <button id="downloadCsv" class="btn secondary">Descargar CSV</button>
         <button id="syncSheets" class="btn secondary">Sincronizar Google Sheets</button>
+      </div>
+      <div class="info-box">
+        <strong>Libro de Excel</strong><br>
+        <small class="muted">Trae una hoja <strong>Tarifas</strong> y una hoja por empleado con el comprobante de pago.
+        En Tarifas escribís el salario por hora de cada persona (celdas amarillas) y cada comprobante se calcula solo:
+        se reconoce por la cédula.</small>
       </div>
       <div id="payMsg" class="message"></div>
       <div id="restReview" class="review-box hidden"></div>

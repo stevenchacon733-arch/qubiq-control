@@ -2,6 +2,28 @@
 
 Control inteligente de asistencia, personal y automatización con QR.
 
+## Planilla en Excel
+
+En **Pre-planilla → Descargar Excel** la app genera un libro `.xlsx` (sin depender de Excel ni de Google) con:
+
+- Una hoja **Tarifas**: una fila por empleado activo (cédula, código, nombre, puesto) donde el dueño escribe
+  el **salario por hora** y la **jornada ordinaria**. Ahí mismo está el porcentaje de **deducción de ley (CCSS)**.
+  Las celdas amarillas son las únicas que se llenan a mano.
+- Una hoja por empleado con el formato del comprobante de pago: encabezado del negocio,
+  `COMPROBANTE DE PAGO-CONTROL DE HORAS LABORADAS`, datos del trabajador, tabla
+  `FECHA / Hora Entrada / Hora Salida / Horas Laboradas / Horas Ordinarias / Horas Extras / Horas Dobles`,
+  `TOTAL POR QUINCENA`, `Total`, `Total Devengado`, deducción, `Monto a Pagar` y la línea de firma.
+
+Cada comprobante toma su tarifa de la hoja Tarifas con `VLOOKUP` **por cédula**, así que al escribir el salario
+por hora se recalculan solos los totales, las horas extra y el monto a pagar.
+
+Las entradas y salidas se escriben como hora redondeada (igual que la sincronización con Google Sheets) y las horas
+laboradas se calculan con fórmula, incluso en turnos que cruzan la medianoche. Los días marcados como descanso
+salen como `DESCANSO` y los días sin marcar quedan en blanco para que se noten.
+
+El generador vive en [src/services/payrollWorkbook.js](src/services/payrollWorkbook.js) sobre un escritor
+`.xlsx` propio ([src/services/xlsxWriter.js](src/services/xlsxWriter.js)), sin dependencias nuevas.
+
 ## Publicar una nueva versión (auto-actualización)
 
 Las versiones publicadas se sirven desde GitHub Releases del repositorio configurado en `build.publish` en [package.json](package.json) (`stevenchacon733-arch/qubiq-control`, privado).

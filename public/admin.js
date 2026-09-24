@@ -656,6 +656,31 @@ async function loadPayroll() {
 }
 
 $('#loadPayroll').onclick = loadPayroll;
+$('#downloadXlsx').onclick = async () => {
+  const from = $('#payFrom').value;
+  const to = $('#payTo').value;
+  try {
+    const response = await fetch(`/api/admin/payroll.xlsx?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { credentials: 'same-origin' });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'No se pudo generar el libro de Excel.');
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const fileName = /filename="([^"]+)"/.exec(disposition)?.[1] || `Planilla ${from} a ${to}.xlsx`;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    msg($('#payMsg'), `Libro descargado: ${fileName}`, true);
+  } catch (error) {
+    msg($('#payMsg'), error.message);
+  }
+};
 $('#downloadCsv').onclick = () => {
   const from = encodeURIComponent($('#payFrom').value);
   const to = encodeURIComponent($('#payTo').value);

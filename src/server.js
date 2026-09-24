@@ -10,6 +10,7 @@ import {
   createEmployee, createSchedule, dailyOverview, listEmployees, listSchedules, updateSchedule,
   archiveEmployee, markAttendance, payrollRows, payrollSyncRows, setDayStatus, setEmployeeActive, updateEmployee
 } from './services/attendance.js';
+import { buildPayrollWorkbook } from './services/payrollWorkbook.js';
 import { isGoogleSheetsConfigured, syncPayrollRows, uploadBackupToDrive } from './services/googleSheets.js';
 import { beginGoogleOAuth, completeGoogleOAuth, googleOAuthStatus, saveGoogleOAuthClient } from './services/googleAuth.js';
 import { isMailConfigured, mailQueueStats, queueAttendanceConfirmation, resetMailTransport, sendTestMail, startMailWorker, stopMailWorker } from './services/mail.js';
@@ -375,6 +376,19 @@ api.get('/admin/payroll.csv', requireAdmin, (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="qubiq-planilla-${from}-${to}.csv"`);
   res.send('\ufeff' + csv);
+});
+
+api.get('/admin/payroll.xlsx', requireAdmin, (req, res) => {
+  try {
+    const from = String(req.query.from || localDate());
+    const to = String(req.query.to || from);
+    const workbook = buildPayrollWorkbook(from, to);
+    audit('ADMIN', 'EXPORT', 'PAYROLL_XLSX', null, { from, to, period: workbook.period, employees: workbook.employees });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${workbook.fileName}"`);
+    res.setHeader('Content-Length', String(workbook.buffer.length));
+    res.end(workbook.buffer);
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
 api.post('/admin/sync/google-sheets', requireAdmin, async (req, res) => {

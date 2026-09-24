@@ -238,6 +238,20 @@ export function dailyOverview(date = localDate()) {
   };
 }
 
+export function payrollEmployees() {
+  return db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.national_id, s.start_time, s.end_time
+                     FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
+                     WHERE e.active = 1 AND COALESCE(e.archived, 0) = 0
+                     ORDER BY e.name`).all().map(row => ({
+    id: row.id,
+    codigo: row.employee_code,
+    cedula: row.national_id || '',
+    empleado: row.name,
+    puesto: row.position || '',
+    jornadaHoras: (scheduleMinutes(row.start_time, row.end_time) ?? 480) / 60
+  }));
+}
+
 export function payrollRows(from, to) {
   return db.prepare(`SELECT a.work_date, e.employee_code, e.name, e.position, e.national_id,
                             MAX(CASE WHEN a.event_type='ENTRY' THEN a.local_time END) AS entry_time,
