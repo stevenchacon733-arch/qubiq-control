@@ -4,14 +4,9 @@ import { google } from 'googleapis';
 import { config } from '../config.js';
 import { getGoogleOAuthClient, googleOAuthStatus } from './googleAuth.js';
 import { ensureBackupFolder, ensurePayrollSpreadsheet } from './sheetFactory.js';
+import { MONTHS, normalizeName as normalize } from './textMatch.js';
 
-const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const IGNORED_TABS = /PRUEBA|VACACIONES/i;
-
-function normalize(value = '') {
-  return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
-}
 
 function normalizeId(value = '') {
   return String(value).replace(/\D+/g, '');

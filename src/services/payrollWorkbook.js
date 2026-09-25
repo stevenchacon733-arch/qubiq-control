@@ -1,10 +1,10 @@
 import { payrollEmployees, payrollSyncRows } from './attendance.js';
 import { getCompanyProfile } from './company.js';
+import { MONTHS } from './textMatch.js';
 import {
   buildWorkbook, columnName, createSheet, dateSerial, merge, setCell, setCol, setFormula, setRowHeight
 } from './xlsxWriter.js';
 
-const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Setiembre','Octubre','Noviembre','Diciembre'];
 const DEFAULT_DEDUCTION = 0.1083;
 const HEADER_ROW = 11;
 const FIRST_DATA_ROW = HEADER_ROW + 1;

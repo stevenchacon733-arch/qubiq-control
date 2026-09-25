@@ -6,9 +6,10 @@ Control inteligente de asistencia, personal y automatización con QR.
 
 En **Pre-planilla → Descargar Excel** la app genera un libro `.xlsx` (sin depender de Excel ni de Google) con:
 
-- Una hoja **Tarifas**: una fila por empleado activo (cédula, código, nombre, puesto) donde el dueño escribe
-  el **salario por hora** y la **jornada ordinaria**. Ahí mismo está el porcentaje de **deducción de ley (CCSS)**.
-  Las celdas amarillas son las únicas que se llenan a mano.
+- Una hoja **Tarifas**: una fila por empleado activo (cédula, código, nombre, puesto) con el
+  **salario por hora** y la **jornada ordinaria**. El salario por hora viene del campo *Salario por hora*
+  de la ficha del empleado, así que el libro sale ya lleno; las celdas amarillas se pueden ajustar a mano
+  para esa quincena sin tocar la ficha. Ahí mismo está el porcentaje de **deducción de ley (CCSS)**.
 - Una hoja por empleado con el formato del comprobante de pago: encabezado del negocio,
   `COMPROBANTE DE PAGO-CONTROL DE HORAS LABORADAS`, datos del trabajador, tabla
   `FECHA / Hora Entrada / Hora Salida / Horas Laboradas / Horas Ordinarias / Horas Extras / Horas Dobles`,
@@ -23,6 +24,13 @@ salen como `DESCANSO` y los días sin marcar quedan en blanco para que se noten.
 
 El generador vive en [src/services/payrollWorkbook.js](src/services/payrollWorkbook.js) sobre un escritor
 `.xlsx` propio ([src/services/xlsxWriter.js](src/services/xlsxWriter.js)), sin dependencias nuevas.
+
+## Nombres de mes en Google Drive
+
+Los meses se escriben **Setiembre** (uso de Costa Rica), pero las plantillas viejas quedaron guardadas como
+*Septiembre*. La búsqueda de archivos y carpetas en Drive pasa por `normalizeName()` de
+[src/services/textMatch.js](src/services/textMatch.js), que trata las dos formas como el mismo nombre; así la
+sincronización encuentra la plantilla sin importar cómo esté escrita y no crea carpetas duplicadas.
 
 ## Publicar una nueva versión (auto-actualización)
 

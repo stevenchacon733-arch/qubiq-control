@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS employees (
   phone TEXT NOT NULL DEFAULT '',
   email TEXT NOT NULL DEFAULT '',
   hire_date TEXT NOT NULL DEFAULT '',
+  hourly_rate REAL NOT NULL DEFAULT 0,
   pin_hash TEXT NOT NULL,
   schedule_id INTEGER,
   active INTEGER NOT NULL DEFAULT 1,
@@ -79,7 +80,8 @@ const employeeMigrations = [
   ['national_id', "TEXT NOT NULL DEFAULT ''"],
   ['phone', "TEXT NOT NULL DEFAULT ''"],
   ['email', "TEXT NOT NULL DEFAULT ''"],
-  ['hire_date', "TEXT NOT NULL DEFAULT ''"]
+  ['hire_date', "TEXT NOT NULL DEFAULT ''"],
+  ['hourly_rate', 'REAL NOT NULL DEFAULT 0']
 ];
 for (const [column, definition] of employeeMigrations) {
   if (!employeeColumns.includes(column)) db.exec(`ALTER TABLE employees ADD COLUMN ${column} ${definition}`);

@@ -156,9 +156,24 @@ try {
   result = await request('/api/admin/employees', {
     method: 'POST',
     body: { employeeCode: 'EMP001', name: 'Persona Prueba', position: 'Asistente', nationalId: '123456789',
-      phone: '88887777', email: 'persona@example.com', hireDate: '2026-09-15', pin: '1234', scheduleId }
+      phone: '88887777', email: 'persona@example.com', hireDate: '2026-09-15', hourlyRate: 3500, pin: '1234', scheduleId }
   });
   assert.equal(result.response.status, 201);
+  const employeeId = Number(result.body.id);
+
+  result = await request('/api/admin/employees');
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.find(item => item.employee_code === 'EMP001')?.hourly_rate, 3500);
+
+  result = await request(`/api/admin/employees/${employeeId}`, { method: 'PATCH', body: { hourlyRate: -5 } });
+  assert.equal(result.response.status, 400);
+
+  result = await request(`/api/admin/employees/${employeeId}`, { method: 'PATCH', body: { hourlyRate: 4200.5 } });
+  assert.equal(result.response.status, 200);
+  result = await request('/api/admin/employees');
+  const patched = result.body.find(item => item.employee_code === 'EMP001');
+  assert.equal(patched?.hourly_rate, 4200.5);
+  assert.equal(patched?.schedule_id, scheduleId, 'Un PATCH parcial no debe borrar el horario del empleado.');
 
   result = await request('/api/admin/qr.png');
   assert.equal(result.response.status, 200);
@@ -196,6 +211,7 @@ try {
   const ratesXml = workbookFiles.get('xl/worksheets/sheet1.xml').toString('utf8');
   assert.match(ratesXml, /123456789/, 'La hoja Tarifas debe listar la cédula del empleado.');
   assert.match(ratesXml, /Salario por hora/);
+  assert.match(ratesXml, /<c r="E5"[^>]*><v>4200\.5<\/v><\/c>/, 'La hoja Tarifas debe traer el salario por hora guardado en la ficha.');
   const voucherXml = workbookFiles.get('xl/worksheets/sheet2.xml').toString('utf8');
   assert.match(voucherXml, /COMPROBANTE DE PAGO-CONTROL DE HORAS LABORADAS/);
   assert.match(voucherXml, /VLOOKUP\(&quot;123456789&quot;,Tarifas!\$A\$5/, 'El comprobante debe buscar la tarifa por cédula.');

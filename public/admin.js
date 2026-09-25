@@ -285,6 +285,7 @@ function openEmployeeModal(id) {
   form.elements.email.value = employee.email || '';
   form.elements.hireDate.value = employee.hire_date || '';
   form.elements.position.value = employee.position || '';
+  form.elements.hourlyRate.value = Number(employee.hourly_rate) > 0 ? employee.hourly_rate : '';
   form.elements.pin.value = '';
   form.elements.scheduleId.value = employee.schedule_id ?? '';
   clearMsg($('#editEmployeeMsg'));

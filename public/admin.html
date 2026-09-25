@@ -95,6 +95,7 @@
         <label>Correo electrónico<input name="email" type="email" required placeholder="empleado@correo.com"></label>
         <label>Fecha de ingreso<input name="hireDate" type="date"></label>
         <label>Puesto<input name="position" maxlength="80" placeholder="Dependiente, regente..."></label>
+        <label>Salario por hora<input name="hourlyRate" type="number" min="0" max="1000000" step="0.01" placeholder="Se usa en la planilla de Excel"></label>
         <label>PIN de marcación<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required placeholder="4-8 dígitos"></label>
         <label>Horario<select name="scheduleId" id="employeeSchedule"><option value="">Sin horario</option></select></label>
         <button class="btn">Crear empleado</button>
@@ -231,6 +232,7 @@
     <label>Correo electrónico<input name="email" type="email" required></label>
     <label>Fecha de ingreso<input name="hireDate" type="date"></label>
     <label>Puesto<input name="position" maxlength="80"></label>
+    <label>Salario por hora<input name="hourlyRate" type="number" min="0" max="1000000" step="0.01" placeholder="Se usa en la planilla de Excel"></label>
     <label>Nuevo PIN (opcional)<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="4-8 dígitos"></label>
     <label>Horario<select name="scheduleId" id="editEmployeeSchedule"><option value="">Sin horario</option></select></label>
     <div class="danger-zone">

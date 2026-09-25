@@ -63,7 +63,7 @@ export function updateSchedule(id, input) {
 
 export function listEmployees() {
   return db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.national_id, e.phone, e.email, e.hire_date,
-                            e.schedule_id, e.active, s.name AS schedule_name, s.start_time, s.end_time
+                            e.hourly_rate, e.schedule_id, e.active, s.name AS schedule_name, s.start_time, s.end_time
                      FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
                      WHERE COALESCE(e.archived, 0) = 0
                      ORDER BY e.active DESC, e.name`).all();
@@ -77,9 +77,13 @@ function normalizeEmployee(input, current = null) {
   const phone = String(input.phone ?? current?.phone ?? '').replace(/\D+/g, '');
   const email = String(input.email ?? current?.email ?? '').trim().toLowerCase();
   const hireDate = String(input.hireDate ?? current?.hire_date ?? '').trim();
-  const scheduleId = input.scheduleId === '' || input.scheduleId == null
-    ? null
-    : Number(input.scheduleId);
+  const hourlyRate = input.hourlyRate === '' || input.hourlyRate == null
+    ? Number(current?.hourly_rate ?? 0)
+    : Number(input.hourlyRate);
+  // Un PATCH que no menciona el horario debe conservarlo; mandar '' o null lo quita a propósito.
+  const scheduleId = input.scheduleId === undefined
+    ? (current?.schedule_id ?? null)
+    : (input.scheduleId === '' || input.scheduleId === null ? null : Number(input.scheduleId));
   const pin = String(input.pin || '').trim();
 
   if (!code || !name || !nationalId || !email) throw new Error('Código, nombre, cédula y correo son obligatorios.');
@@ -90,18 +94,19 @@ function normalizeEmployee(input, current = null) {
   if (phone && !/^\d{8,15}$/.test(phone)) throw new Error('El teléfono debe contener entre 8 y 15 dígitos.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Ingrese un correo electrónico válido.');
   if (hireDate && !/^\d{4}-\d{2}-\d{2}$/.test(hireDate)) throw new Error('La fecha de ingreso no es válida.');
+  if (!Number.isFinite(hourlyRate) || hourlyRate < 0 || hourlyRate > 1000000) throw new Error('El salario por hora debe ser un monto entre 0 y 1.000.000.');
   if (scheduleId != null && (!Number.isInteger(scheduleId) || scheduleId < 1 || !db.prepare('SELECT 1 FROM schedules WHERE id = ? AND active = 1').get(scheduleId))) throw new Error('El horario seleccionado no es válido.');
   if (pin && !/^\d{4,8}$/.test(pin)) throw new Error('El PIN debe tener entre 4 y 8 dígitos.');
-  return { code, name, position, nationalId, phone, email, hireDate, scheduleId, pin };
+  return { code, name, position, nationalId, phone, email, hireDate, hourlyRate: Math.round(hourlyRate * 100) / 100, scheduleId, pin };
 }
 
 export function createEmployee(input) {
   const employee = normalizeEmployee(input);
   if (!employee.pin) throw new Error('El PIN debe tener entre 4 y 8 dígitos.');
   const result = db.prepare(`INSERT INTO employees(employee_code, name, position, national_id, phone, email, hire_date,
-                             pin_hash, schedule_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                             hourly_rate, pin_hash, schedule_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(employee.code, employee.name, employee.position, employee.nationalId, employee.phone, employee.email,
-      employee.hireDate, hashSecret(employee.pin), employee.scheduleId, nowIso());
+      employee.hireDate, employee.hourlyRate, hashSecret(employee.pin), employee.scheduleId, nowIso());
   audit('ADMIN', 'CREATE', 'EMPLOYEE', result.lastInsertRowid, {
     code: employee.code, name: employee.name, scheduleId: employee.scheduleId
   });
@@ -116,9 +121,9 @@ export function updateEmployee(id, input) {
   const employee = normalizeEmployee(input, current);
   const pinHash = employee.pin ? hashSecret(employee.pin) : current.pin_hash;
   const result = db.prepare(`UPDATE employees SET employee_code = ?, name = ?, position = ?, national_id = ?,
-                             phone = ?, email = ?, hire_date = ?, pin_hash = ?, schedule_id = ? WHERE id = ?`)
+                             phone = ?, email = ?, hire_date = ?, hourly_rate = ?, pin_hash = ?, schedule_id = ? WHERE id = ?`)
     .run(employee.code, employee.name, employee.position, employee.nationalId, employee.phone, employee.email,
-      employee.hireDate, pinHash, employee.scheduleId, employeeId);
+      employee.hireDate, employee.hourlyRate, pinHash, employee.scheduleId, employeeId);
   if (!result.changes) throw new Error('Empleado no encontrado.');
 
   audit('ADMIN', 'UPDATE', 'EMPLOYEE', employeeId, {
@@ -239,7 +244,8 @@ export function dailyOverview(date = localDate()) {
 }
 
 export function payrollEmployees() {
-  return db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.national_id, s.start_time, s.end_time
+  return db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.national_id, e.hourly_rate,
+                            s.start_time, s.end_time
                      FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
                      WHERE e.active = 1 AND COALESCE(e.archived, 0) = 0
                      ORDER BY e.name`).all().map(row => ({
@@ -248,6 +254,7 @@ export function payrollEmployees() {
     cedula: row.national_id || '',
     empleado: row.name,
     puesto: row.position || '',
+    salarioHora: Number(row.hourly_rate) || 0,
     jornadaHoras: (scheduleMinutes(row.start_time, row.end_time) ?? 480) / 60
   }));
 }

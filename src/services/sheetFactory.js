@@ -1,13 +1,9 @@
 import { config } from '../config.js';
+import { normalizeName as normalize } from './textMatch.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 const IGNORED_TABS = /PRUEBA|VACACIONES/i;
-
-function normalize(value = '') {
-  return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
-}
 
 function qText(value = '') {
   return String(value).replaceAll("'", "\\'");
@@ -40,11 +36,13 @@ function periodInfo(spec, from) {
 
 export async function ensureChildFolder(drive, parentId, name) {
   const result = await drive.files.list({
-    q: `'${qText(parentId)}' in parents and trashed = false and mimeType = '${FOLDER_MIME}' and name = '${qText(name)}'`,
+    q: `'${qText(parentId)}' in parents and trashed = false and mimeType = '${FOLDER_MIME}'`,
     fields: 'files(id,name,webViewLink)',
-    pageSize: 10
+    orderBy: 'createdTime',
+    pageSize: 200
   });
-  const existing = result.data.files?.[0];
+  const wanted = normalize(name);
+  const existing = (result.data.files || []).find((folder) => normalize(folder.name) === wanted);
   if (existing) return { ...existing, created: false };
   const created = await drive.files.create({
     requestBody: { name, mimeType: FOLDER_MIME, parents: [parentId] },
