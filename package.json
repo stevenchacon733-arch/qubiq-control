@@ -37,7 +37,7 @@
     "publish": {
       "provider": "github",
       "owner": "stevenchacon733-arch",
-      "repo": "qubiq-control-releases",
+      "repo": "qubiq-control",
       "releaseType": "release"
     },
     "files": [

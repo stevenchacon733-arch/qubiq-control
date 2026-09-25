@@ -8,3 +8,14 @@ data/
 *.db-shm
 *.db-wal
 _backups/
+
+# Credenciales y secretos: el repo es PUBLICO, nunca deben subirse.
+.env
+.env.*
+app.secret
+*.secret
+*.enc
+google-service-account*.json
+google-oauth-client.json
+google-oauth-token*.json
+build/google-oauth-client.json
