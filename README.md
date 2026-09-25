@@ -84,7 +84,18 @@ Después de publicar, comprobá que un cliente sin token puede leerlo (debe dar 
 curl -sL -o /dev/null -w "%{http_code}\n" https://github.com/stevenchacon733-arch/qubiq-control/releases/latest/download/latest.yml
 ```
 
-**Importante:** usá `npm run release`, no `electron-builder --win nsis --publish always`. Ese flag nativo de electron-builder duplicó el release (dos releases idénticos) en este proyecto — `scripts/publish-release.mjs` hace lo mismo de forma confiable: si ya existe un release para ese tag lo reemplaza en vez de duplicarlo.
+**Importante:** usá `npm run release`, no `electron-builder --win nsis --publish always`. Ese flag nativo de
+electron-builder duplicó el release (dos releases idénticos) en este proyecto.
+
+[scripts/publish-release.mjs](scripts/publish-release.mjs) publica de forma **atómica para los clientes**: arma el
+release como **borrador** (invisible para el feed), sube y verifica los tres archivos, y recién ahí lo publica.
+Antes lo publicaba primero y subía después: cuando la conexión se cortaba (pasó con 1.0.3 y 1.0.5), quedaba un
+release vacío marcado como el último y el feed daba **404** a todos.
+
+Si se corta, **volvé a correr `npm run release`**: retoma el mismo release, sube solo lo que falte y reintenta los
+errores de red. Si encuentra un release ya publicado pero incompleto, primero lo pasa a borrador para que los
+clientes vuelvan a ver la versión anterior. El instalador se sube en streaming sin límite de espera: con subida
+lenta, GitHub tarda más de 5 minutos en confirmar un archivo de 113 MB y antes eso se tomaba como error.
 
 ### Cómo se actualizan los clientes (desde 1.0.5)
 
