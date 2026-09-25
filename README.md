@@ -86,7 +86,28 @@ curl -sL -o /dev/null -w "%{http_code}\n" https://github.com/stevenchacon733-arc
 
 **Importante:** usá `npm run release`, no `electron-builder --win nsis --publish always`. Ese flag nativo de electron-builder duplicó el release (dos releases idénticos) en este proyecto — `scripts/publish-release.mjs` hace lo mismo de forma confiable: si ya existe un release para ese tag lo reemplaza en vez de duplicarlo.
 
-Los clientes con la app empaquetada (`app.isPackaged`) consultan ese feed al iniciar y se actualizan automáticamente.
+### Cómo se actualizan los clientes (desde 1.0.5)
+
+La app vive todo el día en la bandeja del sistema: cerrar la ventana con la X no la cierra, para que el QR siga
+activo. Por eso no alcanza con "instalar al salir", que casi nunca pasa. La lógica está en
+[desktop/updates.js](desktop/updates.js):
+
+1. Busca versiones nuevas **al arrancar y cada 2 horas** mientras corre.
+2. Si hay una, la **descarga en segundo plano** y avisa en español: *"Qubiq Control X se va a instalar hoy a la
+   1:00 p. m."* (o *mañana*, si ya pasó la hora).
+3. **A la 1:00 p. m. (hora de la computadora) la instala sola, en silencio**, y la app se vuelve a abrir en unos
+   segundos. Si estaba escondida en la bandeja, vuelve escondida.
+4. Si la computadora está apagada a esa hora, se instala al día siguiente a la 1 p. m. "Salir completamente"
+   desde la bandeja también la instala.
+
+Los datos (`%APPDATA%\Qubiq Control\data`) están fuera de la carpeta del programa y el instalador no los borra, así
+que una actualización conserva empleados, marcas, licencia y configuración.
+
+`npm run test:updates` prueba el horario con un reloj simulado (instala a la 1 p. m., no antes; no instala dos
+veces; reintenta si falla; aguanta estar sin internet).
+
+Las versiones 1.0.2 a 1.0.4 usan la lógica vieja: buscan solo al arrancar e instalan **solo** con "Salir
+completamente". Para pasarlas a 1.0.5 hay que salir completamente una vez (o correr el instalador de 1.0.5).
 
 Las instalaciones de 1.0.2 a 1.0.4 traen `private: true` en su `app-update.yml`. Igual se actualizan solas: sin
 `GH_TOKEN` en la máquina, `electron-updater` usa el lector público, que funciona mientras este repo siga público.

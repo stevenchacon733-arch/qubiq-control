@@ -1,17 +1,21 @@
-import { app, BrowserWindow, dialog, shell, Tray, Menu, session } from 'electron';
+import { app, BrowserWindow, dialog, shell, Tray, Menu, Notification, session } from 'electron';
 import electronUpdater from 'electron-updater';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { startAutoUpdates } from './updates.js';
 
 const { autoUpdater } = electronUpdater;
 const PORT = 3220;
-const START_HIDDEN = process.argv.includes('--background');
+const HIDDEN_RESTART_MAX_AGE_MS = 10 * 60 * 1000;
+let startHidden = process.argv.includes('--background');
 let mainWindow;
 let server;
 let tray;
 let quitting = false;
 
 app.setName('Qubiq Control');
+// Debe coincidir con build.appId: Windows solo muestra las notificaciones si el ID es el del acceso directo.
+if (process.platform === 'win32') app.setAppUserModelId('com.qubiq.control');
 if (!app.requestSingleInstanceLock()) app.quit();
 
 function appRoot() {
@@ -22,6 +26,27 @@ function dataDirectory() {
   const dir = path.join(app.getPath('userData'), 'data');
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// Tras una actualización la app se vuelve a abrir sola. Si estaba escondida en la bandeja, tiene que volver
+// escondida y no aparecer de golpe en pantalla. El aviso solo vale unos minutos, por si la instalación falló.
+const hiddenRestartFlag = () => path.join(app.getPath('userData'), 'restart-hidden.flag');
+
+function rememberHiddenForRestart() {
+  if (mainWindow && !mainWindow.isVisible()) writeFileSync(hiddenRestartFlag(), new Date().toISOString());
+}
+
+function consumeHiddenRestartFlag() {
+  const flag = hiddenRestartFlag();
+  if (!existsSync(flag)) return false;
+  const fresh = Date.now() - statSync(flag).mtimeMs < HIDDEN_RESTART_MAX_AGE_MS;
+  try { unlinkSync(flag); } catch { /* sin importancia */ }
+  return fresh;
+}
+
+function notify(title, body) {
+  if (!Notification.isSupported()) return;
+  new Notification({ title, body, icon: path.join(appRoot(), 'build', 'icon.png') }).show();
 }
 
 async function startBackend() {
@@ -70,7 +95,7 @@ function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    if (!START_HIDDEN) {
+    if (!startHidden) {
       mainWindow.show();
       mainWindow.maximize();
     }
@@ -106,13 +131,21 @@ app.whenReady().then(async () => {
   try {
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
+    if (consumeHiddenRestartFlag()) startHidden = true;
     await startBackend();
-    if (app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: true, path: process.execPath, args: ['--background'] });
-      autoUpdater.checkForUpdatesAndNotify();
-    }
     createWindow();
     createTray();
+    if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: true, path: process.execPath, args: ['--background'] });
+      startAutoUpdates({
+        updater: autoUpdater,
+        notify,
+        beforeInstall: () => {
+          rememberHiddenForRestart();
+          quitting = true;
+        }
+      });
+    }
   } catch (error) {
     dialog.showErrorBox('Qubiq Control no pudo iniciar',
       `No se pudo iniciar el servicio local.\n\n${error.message}\n\nVerifique que el puerto ${PORT} no esté siendo usado por otra copia.`);

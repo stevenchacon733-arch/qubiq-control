@@ -12,7 +12,8 @@
     "release": "node scripts/publish-release.mjs",
     "check": "node scripts/static-check.mjs",
     "smoke": "node scripts/smoke-test.mjs",
-    "verify": "npm run check && npm run smoke && npm audit --omit=dev"
+    "verify": "npm run check && npm run smoke && npm run test:updates && npm audit --omit=dev",
+    "test:updates": "node scripts/update-test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
