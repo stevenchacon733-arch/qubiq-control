@@ -1,6 +1,6 @@
 {
   "name": "qubiq-control",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Qubiq Control - control inteligente de asistencia, personal y automatización con QR.",
   "type": "module",
   "main": "desktop/main.js",
