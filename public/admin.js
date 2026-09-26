@@ -1,3 +1,5 @@
+import { mountAppMark } from '/app-mark.js';
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -714,6 +716,8 @@ setInterval(() => {
   if (!$('#login').classList.contains('hidden')) return;
   loadSystem().catch(() => {});
 }, 60000);
+
+mountAppMark($('#appMarkForm'), { onMarked: () => loadOverview().catch(() => {}) });
 
 boot().catch((error) => {
   console.error(error);

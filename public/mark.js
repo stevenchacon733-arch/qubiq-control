@@ -54,7 +54,10 @@ form.onsubmit = async (event) => {
     form.classList.add('hidden');
     state.textContent = 'Registro completado.';
     const action = data.eventType === 'ENTRY' ? 'Entrada' : 'Salida';
-    const extra = data.status === 'LATE' ? ` · ${data.lateMinutes} min tarde` : '';
+    const lateHours = Math.floor((data.lateMinutes || 0) / 60);
+    const lateMins = (data.lateMinutes || 0) % 60;
+    const lateText = !lateHours ? `${lateMins} min` : (lateMins ? `${lateHours} h ${lateMins} min` : `${lateHours} h`);
+    const extra = data.status === 'LATE' && data.lateMinutes > 0 ? ` · ${lateText} tarde` : '';
     const mail = data.emailQueued
       ? ' · Correo de confirmación programado.'
       : ' · Asistencia guardada.';

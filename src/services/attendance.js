@@ -148,7 +148,11 @@ export function archiveEmployee(id) {
   audit('ADMIN', 'ARCHIVE', 'EMPLOYEE', employeeId, employee);
 }
 
-export function markAttendance({ tokenPayload, employeeCode, pin }) {
+const MARK_SOURCES = new Set(['QR', 'APP']);
+
+// source: 'QR' cuando el empleado escanea con su celular, 'APP' cuando marca en la computadora del negocio.
+export function markAttendance({ tokenPayload = null, employeeCode, pin, source = 'QR' }) {
+  if (!MARK_SOURCES.has(source)) throw new Error('Origen de marcación inválido.');
   const employee = db.prepare(`SELECT e.*, s.name AS schedule_name, s.start_time, s.end_time,
                                       s.tolerance_minutes, s.work_days
                                FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
@@ -191,10 +195,11 @@ export function markAttendance({ tokenPayload, employeeCode, pin }) {
 
   db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time,
                                      status, minutes_delta, source, qr_nonce, created_at)
-                              VALUES(?, ?, ?, ?, ?, ?, ?, 'QR', ?, ?)`)
-    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, tokenPayload.nonce, nowIso());
+                              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, source,
+      tokenPayload?.nonce ?? null, nowIso());
 
-  audit(`EMPLOYEE:${employee.employee_code}`, 'MARK', 'ATTENDANCE', employee.id, { date, eventType, status, delta });
+  audit(`EMPLOYEE:${employee.employee_code}`, 'MARK', 'ATTENDANCE', employee.id, { date, eventType, status, delta, source });
   return { employee: employee.name, employeeId: employee.id, employeeCode: employee.employee_code,
     eventType, time: localTime(now).slice(0, 5), status, lateMinutes: delta,
     notificationEmail: employee.email || '', date };

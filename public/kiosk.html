@@ -17,14 +17,24 @@
     </div>
     <button id="logout" class="btn secondary">Cerrar sesión</button>
   </header>
-  <aside class="card qr-wrap kiosk-qr">
-    <h2>QR de asistencia</h2>
-    <p class="muted">Cambia automáticamente. El teléfono debe estar conectado a la red local.</p>
-    <img id="qr" alt="QR dinámico">
-    <p>Nuevo QR en <span id="qrTimer" class="qr-timer">30</span>s</p>
-    <div id="kioskMsg" class="message"></div>
-    <div class="info-box"><small class="muted">No compartir capturas. El código expira rápidamente y la marcación se valida en el servidor.</small></div>
-  </aside>
+  <div class="kiosk-grid">
+    <aside class="card qr-wrap">
+      <h2>Con tu celular</h2>
+      <p class="muted">Escaneá el QR. El teléfono debe estar conectado a la red local.</p>
+      <img id="qr" alt="QR dinámico">
+      <p>Nuevo QR en <span id="qrTimer" class="qr-timer">30</span>s</p>
+      <div id="kioskMsg" class="message"></div>
+      <div class="info-box"><small class="muted">No compartir capturas. El código expira rápidamente y la marcación se valida en el servidor.</small></div>
+    </aside>
+    <form id="appMarkForm" class="card app-mark" autocomplete="off">
+      <h2>O aquí mismo</h2>
+      <p class="muted">Escribí tu código y tu PIN. Sirve para la entrada y para la salida.</p>
+      <label>Código<input name="employeeCode" maxlength="20" required autocomplete="off" placeholder="EMP001"></label>
+      <label>PIN<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" required autocomplete="off" placeholder="4-8 dígitos"></label>
+      <button class="btn">Marcar entrada / salida</button>
+      <div class="message" data-role="result" role="status" aria-live="polite"></div>
+    </form>
+  </div>
 </main>
 <script type="module" src="/kiosk.js?v=1.0.0"></script>
 </body>

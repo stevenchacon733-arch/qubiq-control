@@ -1,3 +1,5 @@
+import { mountAppMark } from '/app-mark.js';
+
 const $ = (selector) => document.querySelector(selector);
 
 function msg(element, text, ok = false) {
@@ -84,5 +86,7 @@ $('#logout').onclick = async () => {
   try { await api('/api/auth/logout', { method: 'POST' }); }
   finally { location.href = '/admin.html'; }
 };
+
+mountAppMark($('#appMarkForm'));
 
 boot().catch(() => { location.href = '/admin.html'; });

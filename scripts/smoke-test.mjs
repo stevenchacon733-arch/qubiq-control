@@ -133,6 +133,10 @@ try {
   result = await request('/api/admin/qr.png');
   assert.equal(result.response.status, 402);
 
+  // Marcar en la app no puede ser una forma de saltarse la licencia.
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'EMP001', pin: '1234' } });
+  assert.equal(result.response.status, 402);
+
   result = await request('/api/admin/license/status');
   assert.equal(result.response.status, 200);
   assert.equal(result.body.hasKey, false);
@@ -222,6 +226,51 @@ try {
   result = await request(`/api/admin/payroll.xlsx?from=${today}&to=2020-01-01`);
   assert.equal(result.response.status, 400);
 
+  // Marcar en la computadora del negocio, sin celular ni QR.
+  const qrSources = db.prepare(`SELECT DISTINCT a.source FROM attendance a JOIN employees e ON e.id = a.employee_id
+                                WHERE e.employee_code = 'EMP001'`).all().map(row => row.source);
+  assert.deepEqual(qrSources, ['QR'], 'Las marcas hechas con el QR deben quedar registradas como QR.');
+
+  result = await request('/api/admin/employees', {
+    method: 'POST',
+    body: { employeeCode: 'EMP002', name: 'Otra Persona', position: 'Cajero', nationalId: '987654321',
+      email: 'otra@example.com', pin: '5678', scheduleId }
+  });
+  assert.equal(result.response.status, 201);
+
+  const savedCookie = cookie;
+  cookie = '';
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'EMP002', pin: '5678' } });
+  assert.equal(result.response.status, 401, 'Sin sesión en la computadora no se puede marcar en la app.');
+  cookie = savedCookie;
+
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'EMP002', pin: '0000' } });
+  assert.equal(result.response.status, 400);
+  assert.match(result.body.error, /Código o PIN incorrecto\. Quedan \d+ intentos\./, 'Un PIN malo en la app debe contar para el bloqueo igual que en el QR.');
+
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'emp002', pin: '5678' } });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.eventType, 'ENTRY');
+  assert.equal(result.body.employee, 'Otra Persona');
+  assert.match(result.body.time, /^\d{2}:\d{2}$/);
+  assert.equal('notificationEmail' in result.body, false, 'No se debe devolver el correo del empleado.');
+
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'EMP002', pin: '5678' } });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.eventType, 'EXIT');
+
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'EMP002', pin: '5678' } });
+  assert.equal(result.response.status, 400);
+  assert.match(result.body.error, /ya fue cerrada/);
+
+  const appRows = db.prepare(`SELECT a.source, a.qr_nonce FROM attendance a JOIN employees e ON e.id = a.employee_id
+                              WHERE e.employee_code = 'EMP002' ORDER BY a.id`).all();
+  assert.equal(appRows.length, 2);
+  assert.ok(appRows.every(row => row.source === 'APP' && row.qr_nonce === null), 'Las marcas de la app deben quedar como APP.');
+  const appAudit = db.prepare(`SELECT details_json FROM audit_log WHERE actor = 'EMPLOYEE:EMP002' AND action = 'MARK'`).all();
+  assert.equal(appAudit.length, 2);
+  assert.ok(appAudit.every(row => JSON.parse(row.details_json).source === 'APP'));
+
   result = await request('/api/admin/company', { method: 'PATCH', body: { businessName: 'X' } });
   assert.equal(result.response.status, 400);
 
@@ -268,6 +317,11 @@ try {
   result = await request('/api/admin/qr.png');
   assert.equal(result.response.status, 200);
   assert.match(result.response.headers.get('content-type') || '', /image\/png/);
+
+  // Recepción también puede marcar en la computadora (llega a validar el PIN: no es un 401).
+  result = await request('/api/admin/attendance/mark', { method: 'POST', body: { employeeCode: 'NOEXISTE', pin: '1111' } });
+  assert.equal(result.response.status, 400);
+  assert.match(result.body.error, /Código o PIN incorrecto/);
 
   result = await request('/api/admin/employees');
   assert.equal(result.response.status, 401);

@@ -2,6 +2,23 @@
 
 Control inteligente de asistencia, personal y automatización con QR.
 
+## Marcar asistencia: con el celular o en la computadora
+
+Hay dos formas de marcar entrada y salida, y las dos pasan por las mismas reglas del servidor (`handleMark` en
+[src/server.js](src/server.js)): PIN, bloqueo tras varios intentos fallidos, cálculo de tardanza y correo de
+confirmación.
+
+- **Con el celular:** el empleado escanea el QR, que cambia cada pocos segundos, y escribe su código y su PIN.
+- **En la computadora del negocio:** en la pantalla de **Recepción** (y en el panel "Hoy" del Administrador) hay un
+  formulario *"O aquí mismo"* / *"Marcar en esta computadora"*. El empleado escribe su código y su PIN, sin celular.
+  El formulario queda listo para el siguiente y el mensaje se borra a los 8 segundos, para que nadie vea quién marcó
+  antes.
+
+La marcación en la computadora (`POST /api/admin/attendance/mark`) solo responde desde la propia computadora Qubiq,
+exige sesión de Administrador o Recepción, y **respeta el mismo bloqueo de licencia que el QR**: si la licencia
+vence, no se puede seguir marcando por ahí. Cada marca guarda su origen en `attendance.source` (`QR` o `APP`) y en
+la bitácora.
+
 ## Planilla en Excel
 
 En **Pre-planilla → Descargar Excel** la app genera un libro `.xlsx` (sin depender de Excel ni de Google) con:

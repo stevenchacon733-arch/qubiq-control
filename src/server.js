@@ -39,7 +39,7 @@ app.use((req, res, next) => {
 });
 function isAdminSurface(path = '') {
   return path === '/' || path === '/admin.html' || path === '/admin.js' || path === '/admin-extra.css' ||
-    path === '/kiosk.html' || path === '/kiosk.js' ||
+    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' ||
     (path === '/setup.html' || path === '/setup.js') || path.startsWith('/api/admin') || path.startsWith('/api/auth') ||
     path.startsWith('/api/google/oauth') || path === '/api/setup' || path === '/api/status';
 }
@@ -428,15 +428,15 @@ api.get('/attendance/token-info', requireLan, (req, res) => {
   res.json({ valid: true, expiresAt: payload.exp });
 });
 
-api.post('/attendance/mark', requireLan, async (req, res) => {
-  const payload = verifyToken(req.body.token, 'attendance');
-  if (!payload) return res.status(400).json({ error: 'El QR venció. Escanee el QR que aparece actualmente.' });
+// Misma marcación para las dos puertas: el QR que escanea el celular y el formulario en la computadora del
+// negocio. Comparten validación de PIN, bloqueo por intentos fallidos, cálculo de tardanza y correo.
+function handleMark(req, res, { tokenPayload = null, source }) {
   const code = String(req.body.employeeCode || '').trim().toUpperCase();
   const key = `${clientIp(req)}|${code}`;
   try { assertNotLocked('EMPLOYEE_PIN', key); }
   catch (error) { return res.status(429).json({ error: error.message }); }
   try {
-    const result = markAttendance({ tokenPayload: payload, employeeCode: code, pin: req.body.pin });
+    const result = markAttendance({ tokenPayload, employeeCode: code, pin: req.body.pin, source });
     resetFailures('EMPLOYEE_PIN', key);
     const { notificationEmail, date, ...publicResult } = result;
     const queued = notificationEmail
@@ -454,6 +454,21 @@ api.post('/attendance/mark', requireLan, async (req, res) => {
     }
     return res.status(400).json({ error: e.message });
   }
+}
+
+api.post('/attendance/mark', requireLan, (req, res) => {
+  const payload = verifyToken(req.body.token, 'attendance');
+  if (!payload) return res.status(400).json({ error: 'El QR venció. Escanee el QR que aparece actualmente.' });
+  return handleMark(req, res, { tokenPayload: payload, source: 'QR' });
+});
+
+// Marcar en la computadora del negocio, sin celular. Vive bajo /api/admin, así que solo responde desde la propia
+// computadora Qubiq (isAdminSurface), y exige sesión de Administrador o Recepción. Respeta el mismo bloqueo de
+// licencia que el QR: si no, sería una forma de seguir marcando con la licencia vencida.
+api.post('/admin/attendance/mark', requireAdminOrKiosk, (req, res) => {
+  const gate = licenseGate();
+  if (gate.blockQrGeneration) return res.status(402).json({ error: gate.banner?.text || 'La licencia no está activa.' });
+  return handleMark(req, res, { source: 'APP' });
 });
 
 app.use('/api', api);
