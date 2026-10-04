@@ -8,7 +8,7 @@ import { createAdminSession, createAttendanceToken, createKioskSession, hashSecr
 import { localDate } from './time.js';
 import {
   createEmployee, createSchedule, dailyOverview, listEmployees, listSchedules, updateSchedule,
-  archiveEmployee, markAttendance, payrollRows, payrollSyncRows, setDayStatus, setEmployeeActive, updateEmployee
+  archiveEmployee, correctAttendanceDay, markAttendance, payrollRows, payrollSyncRows, setDayStatus, setEmployeeActive, updateEmployee
 } from './services/attendance.js';
 import { buildPayrollWorkbook } from './services/payrollWorkbook.js';
 import { isGoogleSheetsConfigured, syncPayrollRows, uploadBackupToDrive } from './services/googleSheets.js';
@@ -375,9 +375,9 @@ api.get('/admin/payroll.csv', requireAdmin, (req, res) => {
   const from = String(req.query.from || localDate());
   const to = String(req.query.to || from);
   const rows = payrollRows(from, to);
-  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas'];
+  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas','Horas ordinarias','Horas extra'];
   const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
-  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas])]
+  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas,r.horasOrdinarias,r.horasExtra])]
     .map(row => row.map(esc).join(',')).join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="qubiq-planilla-${from}-${to}.csv"`);
@@ -447,6 +447,9 @@ api.get('/admin/branches', requireAdmin, bioRoute(() => listBranches()));
 api.post('/admin/branches', requireAdmin, bioRoute((req) => createBranch(req.body)));
 api.patch('/admin/branches/:id', requireAdmin, bioRoute((req) => updateBranch(req.params.id, req.body)));
 api.patch('/admin/branches/:id/active', requireAdmin, bioRoute((req) => setBranchActive(req.params.id, Boolean(req.body.active))));
+
+// Corrección manual de una jornada (olvido de salida, marca equivocada o de prueba).
+api.put('/admin/attendance/day', requireAdmin, bioRoute((req) => correctAttendanceDay(req.body)));
 
 api.get('/admin/qr.png', requireAdminOrKiosk, async (_req, res) => {
   const gate = licenseGate();

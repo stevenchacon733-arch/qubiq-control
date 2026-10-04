@@ -201,7 +201,9 @@ try {
     const payroll = attendance.payrollRows(rows[0].work_date, rows[0].work_date);
     assert.equal(payroll.length, 1);
     assert.ok(payroll[0].entrada && payroll[0].salida);
-    assert.equal(payroll[0].horasTrabajadas, 3, 'Las horas salen del mismo cálculo de la pre-planilla (2 h 30 min redondea a 3).');
+    assert.equal(payroll[0].horasTrabajadas, attendance.countedHours(payroll[0].entrada, payroll[0].salida),
+      'Las horas salen de redondear entrada y salida a la hora, igual que el libro de Excel.');
+    assert.ok(payroll[0].horasTrabajadas === 2 || payroll[0].horasTrabajadas === 3);
     ok('marcación nueva: SALIDA y horas trabajadas en la pre-planilla');
 
     // ----- Jornada cerrada -----
@@ -210,6 +212,62 @@ try {
     assert.equal(sync.rejected, 1);
     assert.equal(attendanceOf(ana).length, 2);
     ok('jornada ya cerrada: la regla existente rechaza una tercera marcación');
+
+    // ----- Horas extra: lo trabajado después del horario se cuenta y se separa -----
+    const fabio = person('EMP009', 'Fabio Prueba', '909990999');
+    bio.setMapping({ employeeId: fabio, deviceId: device.id, zkUserId: '9' });
+    fake.punch('9', ago(640));
+    fake.punch('9', ago(10));
+    sync = await bio.syncDevice(device.id, { manual: true });
+    assert.equal(sync.applied, 2);
+    const longDay = attendanceOf(fabio)[0].work_date;
+    const extraRow = attendance.payrollRows(longDay, longDay).find((row) => row.codigo === 'EMP009');
+    const longHours = attendance.countedHours(extraRow.entrada, extraRow.salida);
+    assert.ok(longHours === 10 || longHours === 11, 'Unas 10 h 30 min se cuentan completas, sin tope por horario.');
+    assert.equal(extraRow.horasTrabajadas, longHours);
+    assert.equal(extraRow.horasOrdinarias, 8, 'La jornada del horario (09:00 a 17:00) son 8 h ordinarias.');
+    assert.equal(extraRow.horasExtra, longHours - 8);
+    const overview = attendance.dailyOverview(longDay).rows.find((row) => row.employee_code === 'EMP009');
+    assert.equal(overview.workedMinutes, longHours * 60);
+    assert.equal(overview.extraMinutes, (longHours - 8) * 60);
+    assert.equal(overview.workDate, longDay);
+    const { rowValues } = await import('../src/services/googleSheets.js');
+    assert.deepEqual(rowValues(null, 1, extraRow).slice(2), [longHours, 8, longHours - 8, 0], 'Google Sheets: laboradas, ordinarias, extras, dobles.');
+    const shortHours = payroll[0].horasTrabajadas;
+    assert.deepEqual(rowValues(null, 1, { ...payroll[0] }).slice(2), [shortHours, shortHours, 0, 0], 'Una jornada corta no genera extras.');
+    ok('horas extra: se cuenta todo lo trabajado y se separa ordinario de extra');
+
+    // ----- Olvido de salida: la marca del día siguiente abre una jornada nueva -----
+    const gil = person('EMP011', 'Gil Prueba', '111101111');
+    bio.setMapping({ employeeId: gil, deviceId: device.id, zkUserId: '11' });
+    fake.punch('11', ago(30 * 60));
+    fake.punch('11', ago(6));
+    fake.punch('11', ago(1));
+    sync = await bio.syncDevice(device.id, { manual: true });
+    assert.equal(sync.applied, 3, 'Ninguna marca queda rechazada ni bloquea al empleado.');
+    let gilRows = attendanceOf(gil);
+    assert.deepEqual(gilRows.map((row) => row.event_type), ['ENTRY', 'ENTRY', 'EXIT']);
+    assert.notEqual(gilRows[0].work_date, gilRows[1].work_date, 'La marca de 30 horas después no cierra la jornada vieja.');
+    assert.equal(gilRows[2].work_date, gilRows[1].work_date);
+    const forgotten = attendance.payrollRows(gilRows[0].work_date, gilRows[0].work_date).find((row) => row.codigo === 'EMP011');
+    assert.equal(forgotten.salida, '');
+    assert.equal(forgotten.horasTrabajadas, '', 'Una jornada sin salida no suma horas.');
+    // El administrador la corrige a mano.
+    const entryClock = gilRows[0].local_time.slice(0, 5);
+    const exitClock = `${String((Number(entryClock.slice(0, 2)) + 8) % 24).padStart(2, '0')}:${entryClock.slice(3)}`;
+    const fixed = attendance.correctAttendanceDay({ employeeId: gil, workDate: gilRows[0].work_date, entry: entryClock, exit: exitClock });
+    assert.equal(fixed.salida, exitClock);
+    const repaired = attendance.payrollRows(gilRows[0].work_date, gilRows[0].work_date).find((row) => row.codigo === 'EMP011');
+    assert.equal(repaired.horasTrabajadas, 8);
+    gilRows = attendanceOf(gil);
+    assert.equal(gilRows.find((row) => row.event_type === 'EXIT' && row.work_date === fixed.workDate).source, 'ADMIN');
+    assert.equal(gilRows.find((row) => row.event_type === 'ENTRY' && row.work_date === fixed.workDate).source, 'BIO', 'La entrada que no se tocó conserva su origen.');
+    // Borrar una marca que vino del lector no hace que el lector la vuelva a meter.
+    attendance.correctAttendanceDay({ employeeId: gil, workDate: fixed.workDate, entry: '', exit: '' });
+    sync = await bio.syncDevice(device.id, { manual: true, full: true });
+    assert.equal(sync.imported, 0);
+    assert.equal(attendanceOf(gil).filter((row) => row.work_date === fixed.workDate).length, 0);
+    ok('olvido de salida: jornada nueva al día siguiente, la anterior queda sin salida y se corrige a mano');
 
     // ----- Fecha inválida y fecha futura -----
     fake.punch('1', { year: 2026, month: 2, day: 31, hour: 8, minute: 0, second: 0 });
@@ -290,7 +348,7 @@ try {
     const dana = person('EMP004', 'Dana Prueba', '404440444');
     enroll = await bio.enrollEmployee({ employeeId: dana, deviceId: device.id });
     assert.equal(enroll.enrolled, true);
-    assert.equal(enroll.zkUserId, '4', 'Asigna solo el siguiente ID y nunca reutiliza uno con historial.');
+    assert.equal(enroll.zkUserId, '12', 'Asigna solo el siguiente ID y nunca reutiliza uno con historial.');
     // Reutilizar a mano el ID de un empleado eliminado no le pasa sus marcaciones a la persona nueva.
     const eva = person('EMP005', 'Eva Prueba', '505550555');
     const reused = bio.setMapping({ employeeId: eva, deviceId: device.id, zkUserId: '2' });
@@ -368,7 +426,7 @@ try {
     await new Promise((done) => server.close(done));
     server = null;
     assert.equal(attendanceOf(dana).length, 0);
-    fake.punch('4', ago(3));
+    fake.punch('12', ago(3));
     server = await startServer({ quiet: true });
     await until(() => attendanceOf(dana).length === 1, 'marcación tomada sola tras reiniciar el servicio');
     await sleep(700);

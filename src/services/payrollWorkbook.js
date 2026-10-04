@@ -1,6 +1,7 @@
 import { payrollEmployees, payrollSyncRows } from './attendance.js';
 import { getCompanyProfile } from './company.js';
 import { MONTHS } from './textMatch.js';
+import { roundedClockHour } from '../time.js';
 import {
   buildWorkbook, columnName, createSheet, dateSerial, merge, setCell, setCol, setFormula, setRowHeight
 } from './xlsxWriter.js';
@@ -26,11 +27,7 @@ function datesBetween(from, to) {
   return dates;
 }
 
-function roundedHour(clock) {
-  const [hours, minutes] = String(clock || '').split(':').map(Number);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours + (minutes >= 30 ? 1 : 0);
-}
+const roundedHour = roundedClockHour;
 
 const digits = (value) => String(value || '').replace(/\D+/g, '');
 

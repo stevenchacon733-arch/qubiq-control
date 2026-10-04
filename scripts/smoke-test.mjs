@@ -382,6 +382,84 @@ try {
   assert.equal(result.response.status, 400, 'No se puede quedar sin sucursales activas.');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM branches').get().n, 4, 'Las sucursales no se borran.');
 
+  // ----- Horas: una sola regla de redondeo, igual a la del libro de Excel -----
+  const { countedHours } = await import('../src/services/attendance.js');
+  for (const [entry, exit, hours] of [['08:20', '17:40', 10], ['08:29', '17:29', 9], ['08:30', '17:30', 9],
+    ['23:40', '07:10', 7], ['08:10', '08:20', 0], ['14:00', '21:00', 7], ['22:00', '06:00', 8]]) {
+    assert.equal(countedHours(entry, exit), hours, `${entry} a ${exit}`);
+  }
+
+  // ----- Corrección manual de una jornada -----
+  result = await request('/api/admin/employees', {
+    method: 'POST',
+    body: { employeeCode: 'EMP777', name: 'Persona Corregida', nationalId: '777000777', email: 'corregida@example.com', pin: '4321', scheduleId }
+  });
+  assert.equal(result.response.status, 201);
+  const fixId = Number(result.body.id);
+  const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Costa_Rica', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const fix = (body) => request('/api/admin/attendance/day', { method: 'PUT', body: { employeeId: fixId, workDate: yesterday, ...body } });
+  const dayRow = async () => (await request(`/api/admin/payroll?from=${yesterday}&to=${yesterday}`)).body.find((row) => row.codigo === 'EMP777');
+
+  result = await fix({ entry: '08:20', exit: '17:40' });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.entrada, '08:20');
+  assert.equal(result.body.salida, '17:40');
+  let fixedRow = await dayRow();
+  assert.equal(fixedRow.horasTrabajadas, 10, 'Entrada 8 y salida 18: 10 horas, como en el Excel.');
+  assert.equal(fixedRow.horasOrdinarias, 8);
+  assert.equal(fixedRow.horasExtra, 2);
+  assert.equal(fixedRow.tardanzaMin, 0);
+  result = await request(`/api/admin/overview?date=${yesterday}`);
+  const fixedOverview = result.body.rows.find((row) => row.employee_code === 'EMP777');
+  assert.equal(fixedOverview.workedMinutes, 600);
+  assert.equal(fixedOverview.extraMinutes, 120);
+  assert.equal(fixedOverview.workDate, yesterday);
+
+  // El comprobante de Excel muestra las mismas horas redondeadas que usa la app.
+  result = await request(`/api/admin/payroll.xlsx?from=${yesterday}&to=${yesterday}`);
+  assert.equal(result.response.status, 200);
+  const fixedBook = unzip(Buffer.from(result.body));
+  const fixedSheets = [...fixedBook.keys()].filter((name) => name.startsWith('xl/worksheets/')).map((name) => fixedBook.get(name).toString('utf8'));
+  const fixedVoucher = fixedSheets.find((xml) => xml.includes('777000777') && xml.includes('COMPROBANTE DE PAGO'));
+  assert.ok(fixedVoucher, 'El empleado corregido debe tener su comprobante.');
+  assert.match(fixedVoucher, /<c r="B\d+"[^>]*><v>8<\/v><\/c><c r="C\d+"[^>]*><v>18<\/v><\/c>/, 'El Excel recibe entrada 8 y salida 18.');
+
+  result = await fix({ entry: '09:15', exit: '17:40' });
+  fixedRow = await dayRow();
+  assert.equal(fixedRow.estadoEntrada, 'LATE');
+  assert.equal(fixedRow.tardanzaMin, 35, 'La tardanza se recalcula con el horario (08:30 + 10 min de tolerancia).');
+  assert.equal(fixedRow.horasTrabajadas, 9);
+
+  result = await fix({ entry: '09:15', exit: '' });
+  fixedRow = await dayRow();
+  assert.equal(fixedRow.salida, '');
+  assert.equal(fixedRow.horasTrabajadas, '');
+
+  result = await fix({ entry: '22:00', exit: '06:00' });
+  assert.equal(result.response.status, 200);
+  fixedRow = await dayRow();
+  assert.equal(fixedRow.horasTrabajadas, 8, 'Una salida más temprana que la entrada es del día siguiente.');
+  const overnight = db.prepare("SELECT occurred_at FROM attendance WHERE employee_id = ? AND work_date = ? ORDER BY occurred_at").all(fixId, yesterday);
+  assert.equal(Date.parse(overnight[1].occurred_at) - Date.parse(overnight[0].occurred_at), 8 * 60 * 60 * 1000);
+
+  for (const bad of [{ entry: '', exit: '17:00' }, { entry: '08:00', exit: '08:00' }, { entry: '25:00', exit: '' }, { entry: '8', exit: '' }]) {
+    result = await fix(bad);
+    assert.equal(result.response.status, 400, JSON.stringify(bad));
+  }
+  result = await request('/api/admin/attendance/day', { method: 'PUT', body: { employeeId: fixId, workDate: '2999-01-01', entry: '08:00' } });
+  assert.equal(result.response.status, 400);
+  result = await request('/api/admin/attendance/day', { method: 'PUT', body: { employeeId: 999999, workDate: yesterday, entry: '08:00' } });
+  assert.equal(result.response.status, 400);
+  fixedRow = await dayRow();
+  assert.equal(fixedRow.entrada, '22:00', 'Un intento inválido no cambia nada.');
+
+  result = await fix({ entry: '', exit: '' });
+  assert.equal(result.response.status, 200);
+  assert.equal(await dayRow(), undefined, 'Borrar las dos marcas deja el día vacío.');
+  const corrections = db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'CORRECT' AND entity_type = 'ATTENDANCE'").get().n;
+  assert.equal(corrections, 5, 'Cada corrección queda en la bitácora.');
+
   const integrity = db.prepare('PRAGMA integrity_check').get();
   assert.equal(integrity.integrity_check, 'ok');
   result = await request('/api/auth/logout', { method: 'POST' });
