@@ -1,6 +1,6 @@
 import { db, audit } from '../db.js';
 import { hashSecret, verifySecret } from '../security.js';
-import { localDate, localMinutes, localTime, minutesBetween, minutesFromClock, nowIso } from '../time.js';
+import { addDays, localDate, localMinutes, localTime, minutesBetween, minutesFromClock, nowIso, roundedClockHour, zonedToDate } from '../time.js';
 
 function scheduleMinutes(startTime, endTime) {
   if (!startTime || !endTime) return null;
@@ -10,21 +10,36 @@ function scheduleMinutes(startTime, endTime) {
   return end - start;
 }
 
-// Tiempo trabajado redondeado a la hora (30 minutos o más suben a la hora siguiente).
-function countedWorkMinutes(actualMinutes) {
-  const actual = Math.max(0, Number(actualMinutes) || 0);
-  const wholeHours = Math.floor(actual / 60);
-  const remainder = actual % 60;
-  return (wholeHours + (remainder >= 30 ? 1 : 0)) * 60;
+// Horas de una jornada: la hora de entrada y la de salida se redondean cada una a la hora entera y se restan.
+// Es exactamente la cuenta que hace el libro de Excel, así la app, el CSV, Google Sheets y el Excel coinciden.
+// Una salida "menor" que la entrada es del día siguiente (turno que cruza la medianoche).
+export function countedHours(entryClock, exitClock) {
+  const entry = roundedClockHour(entryClock);
+  const exit = roundedClockHour(exitClock);
+  if (entry == null || exit == null) return 0;
+  return (exit < entry ? exit + 24 : exit) - entry;
 }
 
-// Las horas ya no se topan con el horario: se cuenta todo lo trabajado y lo que pasa de la jornada del horario
+// Las horas no se topan con el horario: se cuenta todo lo trabajado y lo que pasa de la jornada del horario
 // se informa aparte como horas extra. Sin horario asignado no hay con qué comparar, así que todo es ordinario.
-function splitWorkMinutes(actualMinutes, startTime, endTime) {
-  const total = countedWorkMinutes(actualMinutes);
+function splitWorkMinutes(entryClock, exitClock, startTime, endTime) {
+  const total = entryClock && exitClock ? countedHours(entryClock, exitClock) * 60 : 0;
   const jornada = scheduleMinutes(startTime, endTime);
   const ordinary = jornada == null ? total : Math.min(total, jornada);
   return { total, ordinary, extra: total - ordinary };
+}
+
+// Margen para quedarse después de la hora. Pasado "jornada + este margen" desde la entrada, una marcación nueva
+// ya no puede ser la salida de esa jornada: se trata como un olvido de salida.
+const OVERTIME_MARGIN_MINUTES = 6 * 60;
+
+function entryLateness(employee, at) {
+  if (!employee.start_time) return { status: 'OK', delta: 0 };
+  let scheduledDelta = localMinutes(at) - minutesFromClock(employee.start_time);
+  if (scheduledDelta < -720) scheduledDelta += 1440;
+  if (scheduledDelta > 720) scheduledDelta -= 1440;
+  const late = scheduledDelta - Number(employee.tolerance_minutes || 0);
+  return { status: late > 0 ? 'LATE' : 'ON_TIME', delta: Math.max(0, late) };
 }
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -195,30 +210,27 @@ export function registerAttendance(employee, { at = new Date(), source = 'QR', n
   let status = 'OK';
   let delta = 0;
 
-  if (openEntry) {
+  // Olvido de salida: una entrada abierta solo se puede cerrar el mismo día, o al día siguiente si todavía
+  // cabe dentro de "jornada + margen" (turnos que cruzan la medianoche o que se alargaron). Pasado eso, la
+  // marcación nueva es la entrada de una jornada nueva y la anterior queda sin salida para que el
+  // administrador la corrija; ya no se bloquea al empleado ni se le suman esas horas.
+  const closable = openEntry && (openEntry.work_date === date
+    || minutesBetween(openEntry.occurred_at, now.toISOString())
+       <= (scheduleMinutes(employee.start_time, employee.end_time) ?? 480) + OVERTIME_MARGIN_MINUTES);
+
+  if (closable) {
     if (external) {
       // El lector puede entregar marcaciones atrasadas o repetidas (dos toques seguidos del mismo dedo).
       const sinceEntryMs = now.getTime() - Date.parse(openEntry.occurred_at);
       if (sinceEntryMs <= 0) throw new AttendanceRuleError('La marcación es anterior a una entrada ya registrada.', 'OUT_OF_ORDER');
       if (sinceEntryMs < minGapSeconds * 1000) throw new AttendanceRuleError('Marcación repetida: se conserva la entrada ya registrada.', 'REPEATED');
     }
-    const ageMinutes = minutesBetween(openEntry.occurred_at, now.toISOString());
-    if (ageMinutes > 20 * 60) {
-      throw new Error(`Hay una entrada pendiente del ${openEntry.work_date}. El administrador debe corregirla antes de una nueva marcación.`);
-    }
     eventType = 'EXIT';
     date = openEntry.work_date;
   } else {
     const closedToday = db.prepare("SELECT 1 FROM attendance WHERE employee_id = ? AND work_date = ? AND event_type = 'EXIT'").get(employee.id, date);
     if (closedToday) throw new Error('La jornada de hoy ya fue cerrada.');
-    let nowMinutes = localMinutes(now);
-    const startMinutes = minutesFromClock(employee.start_time);
-    let scheduledDelta = nowMinutes - startMinutes;
-    if (scheduledDelta < -720) scheduledDelta += 1440;
-    if (scheduledDelta > 720) scheduledDelta -= 1440;
-    const late = scheduledDelta - Number(employee.tolerance_minutes || 0);
-    status = late > 0 ? 'LATE' : 'ON_TIME';
-    delta = Math.max(0, late);
+    ({ status, delta } = entryLateness(employee, now));
   }
 
   const inserted = db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time,
@@ -242,6 +254,71 @@ export function markAttendance({ tokenPayload = null, employeeCode, pin, source 
   return result;
 }
 
+const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Corrección manual de una jornada por el administrador: fija o borra la hora de entrada y de salida de un
+// empleado en una fecha. Sirve para un olvido de salida, una marca equivocada o marcas de prueba. Una salida
+// "menor" que la entrada se toma como del día siguiente. Todo queda en la bitácora con el antes y el después.
+export function correctAttendanceDay({ employeeId, workDate, entry = '', exit = '' } = {}) {
+  const employee = db.prepare(`SELECT e.id, e.employee_code, e.name, s.start_time, s.end_time, s.tolerance_minutes
+      FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
+      WHERE e.id = ? AND COALESCE(e.archived, 0) = 0`).get(Number(employeeId));
+  if (!employee) throw new Error('Empleado no encontrado.');
+  const date = String(workDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !zonedToDate(`${date} 00:00:00`)) throw new Error('Fecha inválida.');
+  if (date > localDate()) throw new Error('No se puede corregir una fecha futura.');
+  const entryClock = String(entry || '').trim().slice(0, 5);
+  const exitClock = String(exit || '').trim().slice(0, 5);
+  if (entryClock && !CLOCK.test(entryClock)) throw new Error('La hora de entrada no es válida.');
+  if (exitClock && !CLOCK.test(exitClock)) throw new Error('La hora de salida no es válida.');
+  if (exitClock && !entryClock) throw new Error('No puede haber salida sin entrada.');
+  if (exitClock && exitClock === entryClock) throw new Error('La salida no puede ser igual a la entrada.');
+
+  const entryAt = entryClock ? zonedToDate(`${date} ${entryClock}:00`) : null;
+  const exitAt = exitClock ? zonedToDate(`${exitClock < entryClock ? addDays(date, 1) : date} ${exitClock}:00`) : null;
+  const limit = Date.now() + 5 * 60 * 1000;
+  if ((entryAt && entryAt.getTime() > limit) || (exitAt && exitAt.getTime() > limit)) throw new Error('No se puede registrar una hora futura.');
+
+  const current = (type) => db.prepare('SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? AND event_type = ?')
+    .get(employee.id, date, type);
+  const describe = () => ({ entrada: current('ENTRY')?.local_time?.slice(0, 5) || '', salida: current('EXIT')?.local_time?.slice(0, 5) || '' });
+  const before = describe();
+
+  const apply = (type, clock, at) => {
+    const row = current(type);
+    if (!clock) {
+      if (!row) return;
+      db.prepare('UPDATE biometric_events SET attendance_id = NULL WHERE attendance_id = ?').run(row.id);
+      db.prepare('DELETE FROM attendance WHERE id = ?').run(row.id);
+      return;
+    }
+    if (row && row.local_time.slice(0, 5) === clock) return; // sin cambios: se conserva tal como se marcó
+    const { status, delta } = type === 'ENTRY' ? entryLateness(employee, at) : { status: 'OK', delta: 0 };
+    if (row) {
+      db.prepare(`UPDATE attendance SET occurred_at = ?, local_time = ?, status = ?, minutes_delta = ?, source = 'ADMIN',
+          note = 'Corregida por el administrador' WHERE id = ?`).run(at.toISOString(), `${clock}:00`, status, delta, row.id);
+    } else {
+      db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time, status,
+          minutes_delta, source, note, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'ADMIN', 'Corregida por el administrador', ?)`)
+        .run(employee.id, date, type, at.toISOString(), `${clock}:00`, status, delta, nowIso());
+    }
+  };
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Primero la salida cuando se borra todo, para no dejar nunca una salida sin entrada a medio camino.
+    if (!entryClock) { apply('EXIT', '', null); apply('ENTRY', '', null); }
+    else { apply('ENTRY', entryClock, entryAt); apply('EXIT', exitClock, exitAt); }
+    const after = describe();
+    audit('ADMIN', 'CORRECT', 'ATTENDANCE', employee.id, { workDate: date, antes: before, despues: after });
+    db.exec('COMMIT');
+    return { employeeId: employee.id, employee: employee.name, workDate: date, ...after };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 export function dailyOverview(date = localDate()) {
   const employees = db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.active,
                                        s.start_time, s.end_time, s.work_days
@@ -261,10 +338,10 @@ export function dailyOverview(date = localDate()) {
     }
     const entry = events.find(x => x.event_type === 'ENTRY');
     const exit = events.find(x => x.event_type === 'EXIT');
-    const rawWorked = entry && exit ? minutesBetween(entry.occurred_at, exit.occurred_at) : 0;
-    const worked = splitWorkMinutes(entry && exit ? rawWorked : 0, emp.start_time, emp.end_time);
+    const worked = splitWorkMinutes(exit ? entry?.local_time : null, exit?.local_time, emp.start_time, emp.end_time);
     return {
       ...emp,
+      workDate: events[0]?.work_date || date,
       entry: entry?.local_time?.slice(0,5) || null,
       exit: exit?.local_time?.slice(0,5) || null,
       attendanceStatus: entry ? entry.status : 'ABSENT_OR_PENDING',
@@ -303,7 +380,7 @@ export function payrollEmployees() {
 }
 
 export function payrollRows(from, to) {
-  return db.prepare(`SELECT a.work_date, e.employee_code, e.name, e.position, e.national_id,
+  return db.prepare(`SELECT a.work_date, e.id AS employee_id, e.employee_code, e.name, e.position, e.national_id,
                             MAX(CASE WHEN a.event_type='ENTRY' THEN a.local_time END) AS entry_time,
                             MAX(CASE WHEN a.event_type='EXIT' THEN a.local_time END) AS exit_time,
                             MAX(CASE WHEN a.event_type='ENTRY' THEN a.status END) AS entry_status,
@@ -316,10 +393,11 @@ export function payrollRows(from, to) {
                      WHERE a.work_date BETWEEN ? AND ?
                      GROUP BY a.work_date, e.id
                      ORDER BY a.work_date, e.name`).all(from, to).map(row => {
-    const closed = Boolean(row.entry_iso && row.exit_iso);
-    const worked = closed ? splitWorkMinutes(minutesBetween(row.entry_iso, row.exit_iso), row.start_time, row.end_time) : null;
+    const closed = Boolean(row.entry_time && row.exit_time);
+    const worked = closed ? splitWorkMinutes(row.entry_time, row.exit_time, row.start_time, row.end_time) : null;
     return {
     fecha: row.work_date,
+    employeeId: row.employee_id,
     codigo: row.employee_code,
     cedula: row.national_id || '',
     empleado: row.name,

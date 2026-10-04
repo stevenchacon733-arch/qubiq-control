@@ -65,15 +65,30 @@ descargarlas: Qubiq las necesita en el lector.
 
 ## Horas trabajadas y horas extra
 
-Las horas de una jornada son el tiempo real entre la entrada y la salida, redondeado a la hora (30 minutos o más
-suben). **No se topan con el horario**: si alguien sale después de su hora, ese tiempo se cuenta.
+**Una sola regla de redondeo.** La hora de entrada y la de salida se redondean cada una a la hora entera (30
+minutos o más suben) y se restan: entrada 08:20 y salida 17:40 son 8 y 18, o sea 10 horas. Es la misma cuenta
+que hace el libro de Excel, así que la app, el CSV, Google Sheets y el Excel muestran siempre el mismo número
+(`roundedClockHour` en [src/time.js](src/time.js), `countedHours` en
+[src/services/attendance.js](src/services/attendance.js)).
 
-Lo que pase de la jornada del horario asignado se muestra aparte como **horas extra**: en "Hoy", en la tabla de
-Pre-planilla, en el CSV (columnas *Horas ordinarias* y *Horas extra*) y en Google Sheets (columnas de horas
-ordinarias y extras del comprobante). El libro de Excel ya lo calculaba con fórmulas a partir de la entrada y la
-salida. El cálculo vive en `splitWorkMinutes` de [src/services/attendance.js](src/services/attendance.js).
+**Las horas no se topan con el horario.** Si alguien sale después de su hora, ese tiempo se cuenta. Lo que pase
+de la jornada del horario asignado se muestra aparte como **horas extra**: en "Hoy", en la tabla de Pre-planilla,
+en el CSV (columnas *Horas ordinarias* y *Horas extra*) y en Google Sheets (columnas de ordinarias y extras del
+comprobante).
 
-Ojo con una jornada que quedó sin salida y se cierra al día siguiente: al no haber tope, todas esas horas cuentan.
+## Olvido de salida y corrección de marcaciones
+
+Una entrada abierta se puede cerrar el mismo día, o al día siguiente mientras quepa en *jornada del horario + 6
+horas* (turnos que cruzan la medianoche o que se alargaron). Pasado eso, la marcación nueva **abre una jornada
+nueva** y la anterior queda marcada **Sin salida**: el empleado no se bloquea y no se le suman esas horas. La
+sincronización con Google Sheets sigue sin dejar pasar jornadas sin salida hasta que se corrijan.
+
+El administrador corrige desde el botón **Corregir** de cada fila, en "Hoy" y en Pre-planilla: cambia o borra la
+hora de entrada y la de salida de ese día (`PUT /api/admin/attendance/day`, `correctAttendanceDay`). La tardanza
+se recalcula con el horario, la marca queda con origen `ADMIN` y el antes y el después van a la bitácora. Borrar
+una marca que vino del lector de huella no hace que el lector la vuelva a importar.
+
+"Hoy" se actualiza sola cada 10 segundos.
 
 ## Planilla en Excel
 

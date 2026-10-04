@@ -8,7 +8,7 @@ import { createAdminSession, createAttendanceToken, createKioskSession, hashSecr
 import { localDate } from './time.js';
 import {
   createEmployee, createSchedule, dailyOverview, listEmployees, listSchedules, updateSchedule,
-  archiveEmployee, markAttendance, payrollRows, payrollSyncRows, setDayStatus, setEmployeeActive, updateEmployee
+  archiveEmployee, correctAttendanceDay, markAttendance, payrollRows, payrollSyncRows, setDayStatus, setEmployeeActive, updateEmployee
 } from './services/attendance.js';
 import { buildPayrollWorkbook } from './services/payrollWorkbook.js';
 import { isGoogleSheetsConfigured, syncPayrollRows, uploadBackupToDrive } from './services/googleSheets.js';
@@ -440,6 +440,9 @@ api.get('/admin/biometric/employees/:id', requireAdmin, bioRoute((req) => employ
 api.post('/admin/biometric/enroll', requireAdmin, bioRoute((req) => enrollEmployee(req.body)));
 api.get('/admin/biometric/logs', requireAdmin, bioRoute((req) => listLogs({ deviceId: req.query.deviceId, limit: req.query.limit })));
 api.get('/admin/biometric/events', requireAdmin, bioRoute((req) => listEvents({ deviceId: req.query.deviceId, limit: req.query.limit })));
+
+// Corrección manual de una jornada (olvido de salida, marca equivocada o de prueba).
+api.put('/admin/attendance/day', requireAdmin, bioRoute((req) => correctAttendanceDay(req.body)));
 
 api.get('/admin/qr.png', requireAdminOrKiosk, async (_req, res) => {
   const gate = licenseGate();

@@ -89,6 +89,7 @@ function formatLateTime(minutes) {
 }
 
 function statusBadge(row) {
+  if (row.entry && !row.exit && row.workDate && appStatus?.today && row.workDate < appStatus.today) return '<span class="badge bad">Sin salida</span>';
   if (row.attendanceStatus === 'LATE') return `<span class="badge warn">Tarde ${formatLateTime(row.lateMinutes)}</span>`;
   if (row.entry) return '<span class="badge good">Presente</span>';
   if (row.attendanceStatus === 'OFF') return '<span class="badge">Libre</span>';
@@ -159,7 +160,9 @@ async function loadOverview() {
       <td>${row.exit || '—'}</td>
       <td>${statusBadge(row)}</td>
       <td>${row.exit ? formatHours(row.workedMinutes) : '—'}${row.exit && row.extraMinutes > 0 ? ` <span class="badge warn">${formatHours(row.extraMinutes)} extra</span>` : ''}</td>
-    </tr>`).join('') || '<tr><td colspan="5">No hay empleados activos.</td></tr>';
+      <td><button type="button" class="mini-btn correct-day" data-employee="${row.id}" data-name="${esc(row.name)}" data-date="${row.workDate}" data-entry="${row.entry || ''}" data-exit="${row.exit || ''}">Corregir</button></td>
+    </tr>`).join('') || '<tr><td colspan="6">No hay empleados activos.</td></tr>';
+  bindCorrectButtons();
 }
 
 async function loadSystem() {
@@ -660,11 +663,13 @@ async function loadPayroll() {
         <td>${esc(row.codigo)}</td>
         <td>${esc(row.empleado)}</td>
         <td>${row.entrada || '—'}</td>
-        <td>${row.salida || '—'}</td>
+        <td>${row.salida || (row.fecha < appStatus.today ? '<span class="badge bad">Sin salida</span>' : '—')}</td>
         <td>${formatLateTime(row.tardanzaMin)}</td>
         <td>${formatCountedHours(row.horasTrabajadas)}</td>
         <td>${Number(row.horasExtra) > 0 ? `<span class="badge warn">${formatCountedHours(row.horasExtra)}</span>` : '—'}</td>
-      </tr>`).join('') || '<tr><td colspan="8">Sin registros en el rango.</td></tr>';
+        <td><button type="button" class="mini-btn correct-day" data-employee="${row.employeeId}" data-name="${esc(row.empleado)}" data-date="${row.fecha}" data-entry="${row.entrada || ''}" data-exit="${row.salida || ''}">Corregir</button></td>
+      </tr>`).join('') || '<tr><td colspan="9">Sin registros en el rango.</td></tr>';
+    bindCorrectButtons();
     msg($('#payMsg'), `${data.length} registros encontrados.`, true);
     await loadRestReview();
   } catch (error) {
@@ -732,6 +737,62 @@ setInterval(() => {
 }, 60000);
 
 mountAppMark($('#appMarkForm'), { onMarked: () => loadOverview().catch(() => {}) });
+
+// ---------- Corregir una marcación ----------
+function closeDayModal() {
+  $('#dayModal').classList.add('hidden');
+  clearMsg($('#dayMsg'));
+}
+
+function bindCorrectButtons() {
+  $$('.correct-day').forEach((button) => {
+    button.onclick = () => {
+      const form = $('#dayForm');
+      form.elements.employeeId.value = button.dataset.employee;
+      form.elements.workDate.value = button.dataset.date;
+      form.elements.entry.value = button.dataset.entry;
+      form.elements.exit.value = button.dataset.exit;
+      $('#dayModalWho').textContent = `${button.dataset.name} · ${button.dataset.date}`;
+      clearMsg($('#dayMsg'));
+      $('#dayModal').classList.remove('hidden');
+      form.elements.entry.focus();
+    };
+  });
+}
+
+async function saveDay(body) {
+  clearMsg($('#dayMsg'));
+  try {
+    const saved = await api('/api/admin/attendance/day', { method: 'PUT', body: JSON.stringify(body) });
+    closeDayModal();
+    toast(saved.entrada ? `Marcación corregida: entrada ${saved.entrada}${saved.salida ? `, salida ${saved.salida}` : ', sin salida'}.` : 'Marcaciones de ese día borradas.');
+    await loadOverview();
+    if ($('#payroll').classList.contains('active') && $('#payBody').children.length) await loadPayroll();
+  } catch (error) { msg($('#dayMsg'), error.message); }
+}
+
+$('#dayForm').onsubmit = (event) => {
+  event.preventDefault();
+  saveDay(Object.fromEntries(new FormData(event.currentTarget)));
+};
+$('#clearDay').onclick = () => {
+  const form = $('#dayForm');
+  if (!window.confirm('¿Borrar la entrada y la salida de ese día?')) return;
+  saveDay({ employeeId: form.elements.employeeId.value, workDate: form.elements.workDate.value, entry: '', exit: '' });
+};
+$('#closeDayModal').onclick = closeDayModal;
+$('#cancelDay').onclick = closeDayModal;
+$('#dayModal').onclick = (event) => { if (event.target === $('#dayModal')) closeDayModal(); };
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#dayModal').classList.contains('hidden')) closeDayModal();
+});
+
+// "Hoy" se actualiza sola: una marca con huella o con QR aparece sin tocar "Actualizar".
+setInterval(() => {
+  const idle = $('#login').classList.contains('hidden') && $('#dashboard').classList.contains('active')
+    && $('#dayModal').classList.contains('hidden') && !document.hidden;
+  if (idle) loadOverview().catch(() => {});
+}, 10000);
 
 const biometric = mountBiometric({
   $, $$, api, msg, clearMsg, toast, esc,

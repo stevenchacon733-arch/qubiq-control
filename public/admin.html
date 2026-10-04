@@ -69,7 +69,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Estado</th><th>Horas</th></tr></thead>
+            <thead><tr><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Estado</th><th>Horas</th><th>Acciones</th></tr></thead>
             <tbody id="attendanceBody"></tbody>
           </table>
         </div>
@@ -182,7 +182,7 @@
       <div id="restReview" class="review-box hidden"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Fecha</th><th>Código</th><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Tardanza</th><th>Horas</th><th>Extra</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Código</th><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Tardanza</th><th>Horas</th><th>Extra</th><th>Acciones</th></tr></thead>
           <tbody id="payBody"></tbody>
         </table>
       </div>
@@ -305,6 +305,28 @@
       <button class="btn">Guardar cambios</button>
     </div>
     <div id="editEmployeeMsg" class="message"></div>
+  </form>
+</div>
+
+<div id="dayModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dayModalTitle">
+  <form id="dayForm" class="card modal-card" autocomplete="off">
+    <div class="section-head">
+      <div><h2 id="dayModalTitle">Corregir marcación</h2><span class="muted" id="dayModalWho"></span></div>
+      <button type="button" id="closeDayModal" class="icon-btn" aria-label="Cerrar">×</button>
+    </div>
+    <input type="hidden" name="employeeId">
+    <input type="hidden" name="workDate">
+    <div class="form-row">
+      <label>Entrada<input name="entry" type="time"></label>
+      <label>Salida<input name="exit" type="time"></label>
+    </div>
+    <div class="info-box"><small class="muted">Dejá una hora vacía para borrarla. Si la salida es más temprana que la entrada, se toma como del día siguiente. El cambio queda anotado en la bitácora.</small></div>
+    <div class="modal-actions">
+      <button type="button" id="clearDay" class="btn danger">Borrar las dos</button>
+      <button type="button" id="cancelDay" class="btn secondary">Cancelar</button>
+      <button class="btn">Guardar</button>
+    </div>
+    <div id="dayMsg" class="message"></div>
   </form>
 </div>
 

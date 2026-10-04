@@ -53,3 +53,17 @@ export function zonedToDate(stamp) {
   const first = wall - zoneOffsetMs(wall);
   return new Date(wall - zoneOffsetMs(first));
 }
+
+// Redondeo de una hora de reloj ("HH:MM" o "HH:MM:SS") a la hora entera: 30 minutos o más suben.
+// Es la única regla de redondeo: la usan la app, el CSV, Google Sheets y el libro de Excel.
+export function roundedClockHour(clock) {
+  const [hours, minutes] = String(clock || '').split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours + (minutes >= 30 ? 1 : 0);
+}
+
+export function addDays(date, days) {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
