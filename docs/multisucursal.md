@@ -9,7 +9,7 @@ Qubiq Control. Se construye por fases sobre lo que ya funciona; este documento s
 | --- | --- | --- |
 | 1 | Sucursales (`branches`) | **Hecha** |
 | 2 | Lectores asociados a una sucursal | **Hecha** |
-| 3 | `branch_id`, `device_id` y `event_uuid` en las marcaciones | Pendiente |
+| 3 | `branch_id`, `device_id` y `event_uuid` en las marcaciones | **Hecha** |
 | 4 | API central para recibir marcaciones | Pendiente: falta decidir dónde vive el servidor central |
 | 5 | La integración ZKTeco envía los eventos al central | Pendiente |
 | 6 | Qubiq Agent y cola sin internet | Pendiente |
@@ -47,14 +47,15 @@ Todos son agregados; nada se borra ni se renombra.
 - **Fase 1 (hecha):** `branches(id, name, code, active, created_at, updated_at)`. La sucursal que ya estaba escrita
   en "Identidad del negocio" se convierte sola en la primera.
 - **Fase 2 (hecha):** `biometric_devices` + `branch_id`, `serial_number`. Ver "Lectores y sucursales" más abajo.
-- **Fase 3:** `biometric_events` + `event_uuid` único, `branch_id`, `source`. `attendance` + `branch_id`,
+- **Fase 3 (hecha):** `biometric_events` + `event_uuid` único, `branch_id`, `source`. `attendance` + `branch_id`,
   `device_id` (cada fila es una entrada o una salida, así que entrada y salida pueden ser de sucursales
-  distintas). Lo que ya existe queda en la primera sucursal.
+  distintas). Lo que ya existía queda solo en la primera sucursal. Ver "Marcaciones" más abajo.
 - **Fase 4 en adelante:** credencial por agente (solo se guarda su hash) y, en cada sucursal, `pending_events` con
   estados `pending / syncing / synced / error`.
 
-`event_uuid` se va a calcular a partir del serial del lector, el ID del usuario y la hora de la marcación, no al
-azar: así, si un agente se reinstala y vuelve a leer el lector, genera los mismos UUID y el central no duplica.
+`event_uuid` se calcula a partir del serial del lector, el ID del usuario y la hora de la marcación, no al azar
+(`eventUuid` en `src/services/biometric/index.js`): así, si un agente se reinstala y vuelve a leer el lector,
+genera los mismos UUID y el central no duplica.
 
 ## Lectores y sucursales (fase 2)
 
@@ -74,6 +75,25 @@ azar: así, si un agente se reinstala y vuelve a leer el lector, genera los mism
 Con esto, dos lectores conectados a la **misma** computadora ya funcionan como dos sucursales. Lo que falta para
 lectores en locales distintos es que cada local le mande sus marcaciones al central (fases 4 a 6).
 
+## Marcaciones (fase 3)
+
+- **Cada marcación guarda su sucursal y su lector.** Las de huella, los del lector que las tomó; las del QR y la
+  computadora del negocio, la sucursal de la instalación (la primera). Entrada y salida de un mismo día pueden
+  ser de sucursales distintas.
+- **Dónde se ve.** Con más de una sucursal activa, "Hoy" y Pre-planilla muestran el código de sucursal junto a
+  cada hora y "Hoy" permite filtrar por sucursal (muestra a quienes marcaron entrada o salida ahí). El CSV agrega
+  *Sucursal entrada* y *Sucursal salida*. Con una sola sucursal la pantalla queda igual que antes.
+- **Marcaciones que llegan tarde.** Si una sucursal estuvo sin conexión y sus marcas llegan después de otras que
+  ya se registraron, la jornada de esa persona se reordena sola (`registerLate`): se vuelven a pasar por el motor
+  todas sus marcas posteriores en orden de hora, y queda igual que si todo hubiera llegado a tiempo. Ejemplo: la
+  salida llega primero y se ve como una entrada; al llegar la entrada verdadera, pasa a ser la salida.
+  - Si la marca atrasada no se puede registrar (por ejemplo, es un doble toque), todo queda exactamente como estaba.
+  - Una jornada que el administrador ya corrigió a mano no se reordena.
+  - Con más de 7 días de atraso no se reordena sola: puede caer en una planilla ya cerrada.
+  - Cada reordenamiento queda en la bitácora (`REORDER`).
+- **Regla del motor que conviene conocer.** Por día se toma la primera marca como entrada y la segunda como salida;
+  una tercera se rechaza. Si alguien marca al llegar a una segunda sucursal a medio día, esa marca es su salida.
+
 ## Comunicación entre sucursales
 
 Cada sucursal **llama hacia afuera** por HTTPS al central (`POST /api/attendance/events`), con una credencial
@@ -90,13 +110,11 @@ responde `registered` o `already_registered`; el agente no marca nada como envia
 ## Riesgos detectados
 
 1. **No hay servidor central.** Ver la decisión de arriba; define las fases 4 a 6.
-2. **Marcaciones que llegan tarde o desordenadas.** El motor actual decide entrada o salida en el momento en que
-   llega cada marcación. Si una sucursal estuvo sin internet y manda sus marcas horas después, llegan "viejas"
-   y hoy se rechazan por estar fuera de orden. Antes del piloto hay que hacer que la jornada de un empleado se
-   recalcule con todas sus marcaciones del día ordenadas por hora.
-3. **Olvido de salida.** Con la regla actual, la marca siguiente cierra la jornada anterior (si pasaron menos de
-   20 h) o queda rechazada. Con seis sucursales va a pasar a diario; hace falta la corrección manual y una regla
-   clara.
+2. **Marcaciones que llegan tarde o desordenadas.** Resuelto en la fase 3: la jornada se reordena sola (ver
+   "Marcaciones"). Queda la regla de "tercera marca del día rechazada", que puede molestar a quien se mueve entre
+   sucursales en un mismo día.
+3. **Olvido de salida.** Resuelto en la versión 1.0.8: la marca del día siguiente abre una jornada nueva, la
+   anterior queda "Sin salida" y el administrador la corrige con el botón Corregir.
 4. **Reloj de cada lector.** La hora de la marcación la pone el lector. Un lector desconfigurado produce marcas
    inválidas; conviene que el agente lo ponga en hora solo.
 5. **Huellas no sincronizadas.** Hasta la última etapa, cada empleado se registra en cada lector donde vaya a

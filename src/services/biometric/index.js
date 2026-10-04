@@ -17,6 +17,9 @@ let stopping = false;
 
 const clean = (value, max) => String(value ?? '').replace(/[\u0000-\u001F\u007F]/g, ' ').trim().slice(0, max);
 const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
+// Hasta cuánto atraso se acepta reordenar una jornada sola. Más viejo que eso puede caer en una planilla ya
+// cerrada, así que se deja para corregir a mano.
+const LATE_REORDER_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const MAIL_RECENT_MS = 10 * 60 * 1000;
 
 function state(id) {
@@ -378,6 +381,61 @@ function transaction(work) {
   }
 }
 
+// Marcación que llega tarde: una sucursal estuvo sin conexión y manda ahora una marca anterior a otras que ya se
+// registraron. Se quitan las marcas posteriores de esa persona, se registra la que llegó tarde y se vuelven a
+// pasar las posteriores por el motor en orden de hora. El resultado es el mismo que si todas hubieran llegado a
+// tiempo. Si la tardía no se puede registrar, o algo falla, todo queda exactamente como estaba.
+function registerLate(employee, device, occurred, later) {
+  db.exec('SAVEPOINT marca_tardia');
+  try {
+    const findEvent = db.prepare('SELECT id FROM biometric_events WHERE attendance_id = ?');
+    const removed = later.map((row) => ({ row, eventId: findEvent.get(row.id)?.id ?? null }));
+    for (const item of removed) {
+      if (item.eventId) db.prepare('UPDATE biometric_events SET attendance_id = NULL WHERE id = ?').run(item.eventId);
+      db.prepare('DELETE FROM attendance WHERE id = ?').run(item.row.id);
+    }
+    const result = registerAttendance(employee, { at: occurred, source: 'BIO', minGapSeconds: device.min_gap_seconds,
+      branchId: device.branch_id ?? null, deviceId: device.id });
+
+    const gapOf = db.prepare('SELECT min_gap_seconds FROM biometric_devices WHERE id = ?');
+    const moved = [];
+    const dropped = [];
+    for (const { row, eventId } of removed) {
+      const label = `${row.work_date} ${row.local_time.slice(0, 5)} ${row.event_type === 'ENTRY' ? 'entrada' : 'salida'}`;
+      try {
+        const again = registerAttendance(employee, {
+          at: new Date(row.occurred_at), source: row.source, nonce: row.qr_nonce,
+          minGapSeconds: row.source === 'BIO' && row.device_id ? (gapOf.get(row.device_id)?.min_gap_seconds ?? 0) : 0,
+          branchId: row.branch_id, deviceId: row.device_id
+        });
+        if (eventId) {
+          db.prepare("UPDATE biometric_events SET attendance_id = ?, status = 'APPLIED', note = ?, processed_at = ? WHERE id = ?")
+            .run(again.attendanceId, again.eventType === 'ENTRY' ? 'Entrada' : 'Salida', nowIso(), eventId);
+        }
+        if (again.eventType !== row.event_type || again.date !== row.work_date) {
+          moved.push(`${label} pasó a ${again.eventType === 'ENTRY' ? 'entrada' : 'salida'} del ${again.date}`);
+        }
+      } catch (error) {
+        dropped.push(`${label} (${row.source})`);
+        if (eventId) {
+          db.prepare('UPDATE biometric_events SET status = ?, note = ?, processed_at = ? WHERE id = ?')
+            .run(error.code === 'REPEATED' ? 'IGNORED' : 'REJECTED',
+              `${String(error.message).slice(0, 240)} (al reordenar la jornada)`, nowIso(), eventId);
+        }
+      }
+    }
+    audit('SYSTEM', 'REORDER', 'ATTENDANCE', employee.id, {
+      llegoTarde: `${result.date} ${result.time}`, tipo: result.eventType, lector: device.name, reordenadas: removed.length, moved, dropped
+    });
+    db.exec('RELEASE marca_tardia');
+    return { result, moved, dropped };
+  } catch (error) {
+    db.exec('ROLLBACK TO marca_tardia');
+    db.exec('RELEASE marca_tardia');
+    throw error;
+  }
+}
+
 function decide(event, device) {
   const occurred = zonedToDate(event.punched_local);
   if (!occurred) return { status: 'INVALID', note: 'Fecha u hora inválida recibida del lector.' };
@@ -392,7 +450,22 @@ function decide(event, device) {
   if (!mapping) return { status: 'UNMAPPED', note: 'ID del lector sin empleado vinculado.', occurred };
   const employee = activeEmployeeById(mapping.employee_id);
   if (!employee) return { status: 'REJECTED', note: 'Empleado inactivo o eliminado.', occurred, employeeId: mapping.employee_id };
+  const later = db.prepare('SELECT * FROM attendance WHERE employee_id = ? AND occurred_at > ? ORDER BY occurred_at')
+    .all(employee.id, occurred.toISOString());
+  if (later.length && Date.now() - occurred.getTime() > LATE_REORDER_MAX_MS) {
+    return { status: 'REJECTED', occurred, employeeId: employee.id,
+      note: 'Llegó con más de 7 días de atraso y ya hay marcaciones posteriores. Corregila a mano si corresponde.' };
+  }
+  if (later.some((row) => row.source === 'ADMIN')) {
+    return { status: 'REJECTED', occurred, employeeId: employee.id,
+      note: 'Llegó tarde y esa jornada ya fue corregida a mano por el administrador.' };
+  }
   try {
+    if (later.length) {
+      const late = registerLate(employee, device, occurred, later);
+      const kind = late.result.eventType === 'ENTRY' ? 'Entrada' : 'Salida';
+      return { status: 'APPLIED', note: `${kind} · llegó tarde, se reordenó la jornada`, occurred, employeeId: employee.id, result: late.result };
+    }
     const result = registerAttendance(employee, { at: occurred, source: 'BIO', minGapSeconds: device.min_gap_seconds,
       branchId: device.branch_id ?? null, deviceId: device.id });
     return { status: 'APPLIED', note: result.eventType === 'ENTRY' ? 'Entrada' : 'Salida', occurred, employeeId: employee.id, result };

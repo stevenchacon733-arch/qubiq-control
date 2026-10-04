@@ -467,6 +467,7 @@ try {
     const oldPort = await old.start(0);
     const second = bio.createDevice({ name: 'Lector Bodega', ip: '127.0.0.1', port: oldPort, location: 'Bodega', branchId: ven.id });
     assert.equal(second.branchCode, 'VEN');
+    db.prepare('UPDATE biometric_devices SET import_since = ? WHERE id = ?').run(new Date(Date.now() - 30 * 86400000).toISOString(), second.id);
     // Un empleado usa el mismo ID en todos los lectores, y un ID nunca es de dos personas.
     assert.throws(() => bio.setMapping({ employeeId: ana, deviceId: second.id, zkUserId: '15' }), /mismo ID en todos los lectores/);
     assert.throws(() => bio.setMapping({ employeeId: caro, deviceId: second.id, zkUserId: '1' }), /ya está asignado a Ana Prueba/);
@@ -514,8 +515,118 @@ try {
     assert.equal(attendance.dailyOverview(hugoRows[0].work_date, { branchId: pital.id }).rows.length, 0);
     assert.equal(count('SELECT COUNT(*) AS n FROM attendance WHERE branch_id IS NULL'), 0, 'Ninguna marcación queda sin sucursal.');
     assert.equal(count('SELECT COUNT(*) AS n FROM biometric_events WHERE event_uuid IS NULL OR branch_id IS NULL'), 0);
-    await old.stop();
     ok('entrada en una sucursal y salida en otra: un solo empleado, cada marca con su sucursal');
+
+    // ----- Marcaciones que llegan tarde: una sucursal estuvo sin internet y manda sus marcas después -----
+    const both = (code, name, cedula, id) => {
+      const employeeId = person(code, name, cedula);
+      bio.setMapping({ employeeId, deviceId: device.id, zkUserId: id });
+      bio.setMapping({ employeeId, deviceId: second.id, zkUserId: id });
+      return employeeId;
+    };
+    const marks = (employeeId) => db.prepare(`SELECT a.id, a.event_type, a.work_date, a.local_time, a.source, a.branch_id, a.device_id
+      FROM attendance a WHERE a.employee_id = ? ORDER BY a.occurred_at`).all(employeeId);
+    const eventsOf = (id) => db.prepare('SELECT status, note, attendance_id, device_id FROM biometric_events WHERE zk_user_id = ? ORDER BY punched_local').all(id);
+
+    // 1. La salida (sucursal con internet) llega antes que la entrada (sucursal sin internet).
+    const iris = both('EMP031', 'Iris Prueba', '313331333', '31');
+    fake.punch('31', ago(10));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 1);
+    assert.deepEqual(marks(iris).map((row) => row.event_type), ['ENTRY'], 'Sin la otra marca, la única que hay parece una entrada.');
+    old.punch('31', ago(500));
+    sync = await bio.syncDevice(second.id, { manual: true });
+    assert.equal(sync.applied, 1);
+    let late = marks(iris);
+    assert.deepEqual(late.map((row) => [row.event_type, row.branch_id]), [['ENTRY', ven.id], ['EXIT', agz.id]],
+      'Al llegar la marca atrasada, la jornada queda como si todo hubiera llegado a tiempo.');
+    assert.equal(late[0].work_date, late[1].work_date);
+    let lateEvents = eventsOf('31');
+    assert.deepEqual(lateEvents.map((row) => row.status), ['APPLIED', 'APPLIED']);
+    assert.deepEqual(lateEvents.map((row) => row.attendance_id), [late[0].id, late[1].id], 'Cada marcación del lector sigue enlazada a su marca.');
+    assert.match(lateEvents[0].note, /llegó tarde/);
+    assert.equal(lateEvents[1].note, 'Salida');
+    assert.equal(count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'REORDER' AND entity_id = ?", String(iris)), 1);
+
+    // 2. Olvido aparente de salida: la salida de ayer llega después de la entrada de hoy.
+    const joel = both('EMP032', 'Joel Prueba', '323332333', '32');
+    fake.punch('32', ago(26 * 60));
+    fake.punch('32', ago(120));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 2);
+    assert.deepEqual(marks(joel).map((row) => row.event_type), ['ENTRY', 'ENTRY']);
+    const todayEntry = marks(joel)[1];
+    old.punch('32', ago(18 * 60));
+    assert.equal((await bio.syncDevice(second.id, { manual: true })).applied, 1);
+    late = marks(joel);
+    assert.deepEqual(late.map((row) => row.event_type), ['ENTRY', 'EXIT', 'ENTRY']);
+    assert.equal(late[1].work_date, late[0].work_date, 'La salida atrasada cierra la jornada de ayer.');
+    assert.equal(late[1].branch_id, ven.id);
+    assert.deepEqual([late[2].work_date, late[2].local_time], [todayEntry.work_date, todayEntry.local_time], 'La entrada de hoy queda igual.');
+    assert.deepEqual(eventsOf('32').map((row) => row.status), ['APPLIED', 'APPLIED', 'APPLIED']);
+    assert.equal(eventsOf('32')[2].attendance_id, late[2].id);
+
+    // 3. Una marca atrasada que no se puede registrar deja todo exactamente como estaba.
+    const kira = both('EMP033', 'Kira Prueba', '333333333', '33');
+    fake.punch('33', ago(300));
+    fake.punch('33', ago(100));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 2);
+    const kiraBefore = marks(kira);
+    old.punch('33', localParts(new Date(Date.now() - 300 * 60000 + 30000)));
+    sync = await bio.syncDevice(second.id, { manual: true });
+    assert.equal(sync.imported, 1);
+    assert.equal(sync.applied, 0);
+    assert.deepEqual(marks(kira), kiraBefore, 'Mismas marcas, mismos identificadores.');
+    assert.equal(eventsOf('33').filter((row) => row.device_id === second.id)[0].status, 'IGNORED');
+
+    // 4. Una marca intermedia que llega tarde se comporta igual que si hubiera llegado a tiempo: pasa a ser la salida.
+    const lia = both('EMP036', 'Lia Prueba', '363336333', '36');
+    fake.punch('36', ago(300));
+    fake.punch('36', ago(100));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 2);
+    old.punch('36', ago(200));
+    assert.equal((await bio.syncDevice(second.id, { manual: true })).applied, 1);
+    late = marks(lia);
+    assert.deepEqual(late.map((row) => [row.event_type, row.branch_id]), [['ENTRY', agz.id], ['EXIT', ven.id]]);
+    lateEvents = eventsOf('36');
+    assert.deepEqual(lateEvents.map((row) => row.status), ['APPLIED', 'APPLIED', 'REJECTED']);
+    assert.match(lateEvents[2].note, /al reordenar la jornada/);
+    assert.equal(lateEvents[2].attendance_id, null);
+
+    // 5. Lo que el administrador corrigió a mano no se reordena solo.
+    const lara = both('EMP034', 'Lara Prueba', '343334333', '34');
+    fake.punch('34', ago(300));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 1);
+    const laraEntry = marks(lara)[0];
+    const adminExit = localParts(new Date(Date.now() - 60 * 60000));
+    attendance.correctAttendanceDay({ employeeId: lara, workDate: laraEntry.work_date, entry: laraEntry.local_time.slice(0, 5),
+      exit: `${String(adminExit.hour).padStart(2, '0')}:${String(adminExit.minute).padStart(2, '0')}` });
+    const laraBefore = marks(lara);
+    assert.deepEqual(laraBefore.map((row) => row.source), ['BIO', 'ADMIN']);
+    old.punch('34', ago(200));
+    sync = await bio.syncDevice(second.id, { manual: true });
+    assert.equal(sync.rejected, 1);
+    assert.deepEqual(marks(lara), laraBefore);
+    assert.match(eventsOf('34').find((row) => row.device_id === second.id).note, /corregida a mano/);
+
+    // 6. Con más de una semana de atraso no se toca nada solo.
+    const mora = both('EMP035', 'Mora Prueba', '353335333', '35');
+    fake.punch('35', ago(60));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 1);
+    const moraBefore = marks(mora);
+    old.punch('35', ago(8 * 24 * 60 + 60));
+    sync = await bio.syncDevice(second.id, { manual: true, full: true });
+    assert.equal(sync.rejected, 1);
+    assert.deepEqual(marks(mora), moraBefore);
+    assert.match(eventsOf('35').find((row) => row.device_id === second.id).note, /7 días/);
+
+    // Y nada de esto duplica: volver a descargar los dos lectores no cambia nada.
+    const marksTotal = count('SELECT COUNT(*) AS n FROM attendance');
+    assert.equal((await bio.syncDevice(device.id, { manual: true, full: true })).imported, 0);
+    assert.equal((await bio.syncDevice(second.id, { manual: true, full: true })).imported, 0);
+    assert.equal(count('SELECT COUNT(*) AS n FROM attendance'), marksTotal);
+    assert.equal(count('SELECT COUNT(*) AS n FROM biometric_events WHERE attendance_id IS NOT NULL'),
+      count("SELECT COUNT(*) AS n FROM attendance WHERE source = 'BIO' AND id IN (SELECT attendance_id FROM biometric_events)"));
+    await old.stop();
+    ok('marcaciones atrasadas de otra sucursal: la jornada se reordena sola, sin duplicar y sin pisar correcciones');
     ok('varios lectores: cada uno en su sucursal, mismo ID por empleado, formato de usuario detectado solo');
 
     // ----- API: solo con sesión de administrador -----
