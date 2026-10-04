@@ -192,7 +192,8 @@ function roundedClockHour(clock) {
   return whole + (remainder >= 30 ? 1 : 0);
 }
 
-function rowValues(_profile, _rowNumber, row) {
+// Columnas B:G del comprobante: entrada, salida, horas laboradas, ordinarias, extras y dobles.
+export function rowValues(_profile, _rowNumber, row) {
   const entryHours = clockToHours(row.entrada);
   const exitHours = clockToHours(row.salida);
   const roundedEntry = roundedClockHour(row.entrada);
@@ -204,11 +205,13 @@ function rowValues(_profile, _rowNumber, row) {
   const adjustedExit = exitHours < entryHours ? exitHours + 24 : exitHours;
   const rawMinutes = Math.max(0, Math.round((adjustedExit - entryHours) * 60));
   const roundedHours = Math.floor(rawMinutes / 60) + ((rawMinutes % 60) >= 30 ? 1 : 0);
-  const worked = Number.isFinite(counted) ? Math.min(counted, cap) : Math.min(roundedHours, cap);
+  // Se cuenta todo lo trabajado; lo que pasa de la jornada del horario va a la columna de horas extra.
+  const worked = row.horasTrabajadas !== '' && Number.isFinite(counted) ? counted : roundedHours;
+  const ordinary = Math.min(worked, cap);
   const entryTime = roundedEntry / 24;
   const exitTime = roundedExit / 24;
 
-  return [entryTime, exitTime, worked, worked, 0, 0];
+  return [entryTime, exitTime, worked, ordinary, worked - ordinary, 0];
 }
 
 async function syncGenericPayroll(sheets, target, rows, spec) {
@@ -220,8 +223,8 @@ async function syncGenericPayroll(sheets, target, rows, spec) {
       updateSheetProperties: { properties: { sheetId: first.sheetId, title: 'Asistencia', gridProperties: { frozenRowCount: 1 } }, fields: 'title,gridProperties.frozenRowCount' }
     }] } });
   }
-  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado','Tardanza (min)','Horas trabajadas','Descanso'];
-  const values = rows.map(row => [row.fecha,row.codigo,row.cedula,row.empleado,row.puesto,row.entrada || '',row.salida || '',row.estadoEntrada || '',row.tardanzaMin ?? 0,row.horasTrabajadas ?? '',row.descanso ? 'SÍ' : '']);
+  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado','Tardanza (min)','Horas trabajadas','Horas extra','Descanso'];
+  const values = rows.map(row => [row.fecha,row.codigo,row.cedula,row.empleado,row.puesto,row.entrada || '',row.salida || '',row.estadoEntrada || '',row.tardanzaMin ?? 0,row.horasTrabajadas ?? '',row.horasExtra ?? '',row.descanso ? 'SÍ' : '']);
   await sheets.spreadsheets.values.clear({ spreadsheetId: target.id, range: "'Asistencia'!A1:K5000" });
   await sheets.spreadsheets.values.update({ spreadsheetId: target.id, range: "'Asistencia'!A1", valueInputOption: 'USER_ENTERED', requestBody: { values: [headers, ...values] } });
   await sheets.spreadsheets.batchUpdate({ spreadsheetId: target.id, requestBody: { requests: [{ repeatCell: {

@@ -211,6 +211,26 @@ try {
     assert.equal(attendanceOf(ana).length, 2);
     ok('jornada ya cerrada: la regla existente rechaza una tercera marcación');
 
+    // ----- Horas extra: lo trabajado después del horario se cuenta y se separa -----
+    const fabio = person('EMP009', 'Fabio Prueba', '909990999');
+    bio.setMapping({ employeeId: fabio, deviceId: device.id, zkUserId: '9' });
+    fake.punch('9', ago(640));
+    fake.punch('9', ago(10));
+    sync = await bio.syncDevice(device.id, { manual: true });
+    assert.equal(sync.applied, 2);
+    const longDay = attendanceOf(fabio)[0].work_date;
+    const extraRow = attendance.payrollRows(longDay, longDay).find((row) => row.codigo === 'EMP009');
+    assert.equal(extraRow.horasTrabajadas, 11, '10 h 30 min se cuentan como 11 h, sin tope por horario.');
+    assert.equal(extraRow.horasOrdinarias, 8, 'La jornada del horario (09:00 a 17:00) son 8 h ordinarias.');
+    assert.equal(extraRow.horasExtra, 3);
+    const overview = attendance.dailyOverview(longDay).rows.find((row) => row.employee_code === 'EMP009');
+    assert.equal(overview.workedMinutes, 660);
+    assert.equal(overview.extraMinutes, 180);
+    const { rowValues } = await import('../src/services/googleSheets.js');
+    assert.deepEqual(rowValues(null, 1, extraRow).slice(2), [11, 8, 3, 0], 'Google Sheets: laboradas, ordinarias, extras, dobles.');
+    assert.deepEqual(rowValues(null, 1, { ...payroll[0] }).slice(2), [3, 3, 0, 0], 'Una jornada corta no genera extras.');
+    ok('horas extra: se cuenta todo lo trabajado y se separa ordinario de extra');
+
     // ----- Fecha inválida y fecha futura -----
     fake.punch('1', { year: 2026, month: 2, day: 31, hour: 8, minute: 0, second: 0 });
     fake.punch('1', localParts(new Date(Date.now() + 3 * 3600000)));
@@ -290,7 +310,7 @@ try {
     const dana = person('EMP004', 'Dana Prueba', '404440444');
     enroll = await bio.enrollEmployee({ employeeId: dana, deviceId: device.id });
     assert.equal(enroll.enrolled, true);
-    assert.equal(enroll.zkUserId, '4', 'Asigna solo el siguiente ID y nunca reutiliza uno con historial.');
+    assert.equal(enroll.zkUserId, '10', 'Asigna solo el siguiente ID y nunca reutiliza uno con historial.');
     // Reutilizar a mano el ID de un empleado eliminado no le pasa sus marcaciones a la persona nueva.
     const eva = person('EMP005', 'Eva Prueba', '505550555');
     const reused = bio.setMapping({ employeeId: eva, deviceId: device.id, zkUserId: '2' });
@@ -368,7 +388,7 @@ try {
     await new Promise((done) => server.close(done));
     server = null;
     assert.equal(attendanceOf(dana).length, 0);
-    fake.punch('4', ago(3));
+    fake.punch('10', ago(3));
     server = await startServer({ quiet: true });
     await until(() => attendanceOf(dana).length === 1, 'marcación tomada sola tras reiniciar el servicio');
     await sleep(700);

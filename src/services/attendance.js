@@ -10,13 +10,21 @@ function scheduleMinutes(startTime, endTime) {
   return end - start;
 }
 
-function countedWorkMinutes(actualMinutes, startTime, endTime) {
+// Tiempo trabajado redondeado a la hora (30 minutos o más suben a la hora siguiente).
+function countedWorkMinutes(actualMinutes) {
   const actual = Math.max(0, Number(actualMinutes) || 0);
   const wholeHours = Math.floor(actual / 60);
   const remainder = actual % 60;
-  const rounded = (wholeHours + (remainder >= 30 ? 1 : 0)) * 60;
-  const cap = scheduleMinutes(startTime, endTime);
-  return cap == null ? rounded : Math.min(rounded, cap);
+  return (wholeHours + (remainder >= 30 ? 1 : 0)) * 60;
+}
+
+// Las horas ya no se topan con el horario: se cuenta todo lo trabajado y lo que pasa de la jornada del horario
+// se informa aparte como horas extra. Sin horario asignado no hay con qué comparar, así que todo es ordinario.
+function splitWorkMinutes(actualMinutes, startTime, endTime) {
+  const total = countedWorkMinutes(actualMinutes);
+  const jornada = scheduleMinutes(startTime, endTime);
+  const ordinary = jornada == null ? total : Math.min(total, jornada);
+  return { total, ordinary, extra: total - ordinary };
 }
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -254,14 +262,15 @@ export function dailyOverview(date = localDate()) {
     const entry = events.find(x => x.event_type === 'ENTRY');
     const exit = events.find(x => x.event_type === 'EXIT');
     const rawWorked = entry && exit ? minutesBetween(entry.occurred_at, exit.occurred_at) : 0;
-    const worked = entry && exit ? countedWorkMinutes(rawWorked, emp.start_time, emp.end_time) : 0;
+    const worked = splitWorkMinutes(entry && exit ? rawWorked : 0, emp.start_time, emp.end_time);
     return {
       ...emp,
       entry: entry?.local_time?.slice(0,5) || null,
       exit: exit?.local_time?.slice(0,5) || null,
       attendanceStatus: entry ? entry.status : 'ABSENT_OR_PENDING',
       lateMinutes: entry?.minutes_delta || 0,
-      workedMinutes: worked
+      workedMinutes: worked.total,
+      extraMinutes: worked.extra
     };
   });
 
@@ -306,7 +315,10 @@ export function payrollRows(from, to) {
                      LEFT JOIN schedules s ON s.id = e.schedule_id
                      WHERE a.work_date BETWEEN ? AND ?
                      GROUP BY a.work_date, e.id
-                     ORDER BY a.work_date, e.name`).all(from, to).map(row => ({
+                     ORDER BY a.work_date, e.name`).all(from, to).map(row => {
+    const closed = Boolean(row.entry_iso && row.exit_iso);
+    const worked = closed ? splitWorkMinutes(minutesBetween(row.entry_iso, row.exit_iso), row.start_time, row.end_time) : null;
+    return {
     fecha: row.work_date,
     codigo: row.employee_code,
     cedula: row.national_id || '',
@@ -316,11 +328,12 @@ export function payrollRows(from, to) {
     salida: row.exit_time?.slice(0,5) || '',
     estadoEntrada: row.entry_status || '',
     tardanzaMin: row.late_minutes || 0,
-    horasTrabajadas: row.entry_iso && row.exit_iso
-      ? countedWorkMinutes(minutesBetween(row.entry_iso, row.exit_iso), row.start_time, row.end_time) / 60
-      : '',
+    horasTrabajadas: worked ? worked.total / 60 : '',
+    horasOrdinarias: worked ? worked.ordinary / 60 : '',
+    horasExtra: worked ? worked.extra / 60 : '',
     horasHorario: scheduleMinutes(row.start_time, row.end_time) / 60
-  }));
+    };
+  });
 }
 
 function datesBetween(from, to) {

@@ -158,7 +158,7 @@ async function loadOverview() {
       <td>${row.entry || '—'}</td>
       <td>${row.exit || '—'}</td>
       <td>${statusBadge(row)}</td>
-      <td>${row.exit ? formatHours(row.workedMinutes) : '—'}</td>
+      <td>${row.exit ? formatHours(row.workedMinutes) : '—'}${row.exit && row.extraMinutes > 0 ? ` <span class="badge warn">${formatHours(row.extraMinutes)} extra</span>` : ''}</td>
     </tr>`).join('') || '<tr><td colspan="5">No hay empleados activos.</td></tr>';
 }
 
@@ -663,7 +663,8 @@ async function loadPayroll() {
         <td>${row.salida || '—'}</td>
         <td>${formatLateTime(row.tardanzaMin)}</td>
         <td>${formatCountedHours(row.horasTrabajadas)}</td>
-      </tr>`).join('') || '<tr><td colspan="7">Sin registros en el rango.</td></tr>';
+        <td>${Number(row.horasExtra) > 0 ? `<span class="badge warn">${formatCountedHours(row.horasExtra)}</span>` : '—'}</td>
+      </tr>`).join('') || '<tr><td colspan="8">Sin registros en el rango.</td></tr>';
     msg($('#payMsg'), `${data.length} registros encontrados.`, true);
     await loadRestReview();
   } catch (error) {

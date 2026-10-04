@@ -374,9 +374,9 @@ api.get('/admin/payroll.csv', requireAdmin, (req, res) => {
   const from = String(req.query.from || localDate());
   const to = String(req.query.to || from);
   const rows = payrollRows(from, to);
-  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas'];
+  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas','Horas ordinarias','Horas extra'];
   const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
-  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas])]
+  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas,r.horasOrdinarias,r.horasExtra])]
     .map(row => row.map(esc).join(',')).join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="qubiq-planilla-${from}-${to}.csv"`);

@@ -63,6 +63,18 @@ real:** antes de publicar un release que toque esta parte, probá contra el lect
 ZKBio Time.Net puede seguir instalado para administrar el lector, pero que **no** borre las marcaciones al
 descargarlas: Qubiq las necesita en el lector.
 
+## Horas trabajadas y horas extra
+
+Las horas de una jornada son el tiempo real entre la entrada y la salida, redondeado a la hora (30 minutos o más
+suben). **No se topan con el horario**: si alguien sale después de su hora, ese tiempo se cuenta.
+
+Lo que pase de la jornada del horario asignado se muestra aparte como **horas extra**: en "Hoy", en la tabla de
+Pre-planilla, en el CSV (columnas *Horas ordinarias* y *Horas extra*) y en Google Sheets (columnas de horas
+ordinarias y extras del comprobante). El libro de Excel ya lo calculaba con fórmulas a partir de la entrada y la
+salida. El cálculo vive en `splitWorkMinutes` de [src/services/attendance.js](src/services/attendance.js).
+
+Ojo con una jornada que quedó sin salida y se cierra al día siguiente: al no haber tope, todas esas horas cuentan.
+
 ## Planilla en Excel
 
 En **Pre-planilla → Descargar Excel** la app genera un libro `.xlsx` (sin depender de Excel ni de Google) con:
