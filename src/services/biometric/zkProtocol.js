@@ -37,6 +37,9 @@ export const CMD = Object.freeze({
   GET_VERSION: 1100
 });
 const FCT_USER = 5;
+// Tipos de aviso en tiempo real (viajan en el campo de sesión del paquete).
+const EVENT = Object.freeze({ ENROLL_FINGER: 8, FINGER_SCORE: 256 });
+const OTHER_EVENTS = new Set([1, 2, 4, 16, 32, 64, 128, 512, 1024]);
 
 export class ZkError extends Error {
   constructor(message, code = 'ZK_ERROR') {
@@ -431,28 +434,44 @@ export class ZkSession {
     const deadline = Date.now() + waitMs;
     let outcome = 'TIMEOUT';
     let touches = 0;
+    let lastTouchAt = 0;
+    const touch = () => { touches += 1; lastTouchAt = Date.now(); onProgress?.(touches); };
     const handle = (frame) => {
-      const result = frame.data.length >= 2 ? frame.data.readUInt16LE(0) : -1;
-      if (result === 0x64) { touches += 1; onProgress?.(touches); }
-      else if (result === 5) outcome = 'DUPLICATE';
-      else if (result === 4 || result === 6) outcome = 'CANCELLED';
-      else if (result === 0 && touches > 0) outcome = 'DONE';
+      // En los avisos del lector el campo de sesión trae el tipo de evento, y el dato puede venir en 1 o 2 bytes
+      // (la calidad de cada toque llega como un solo byte, 0x64).
+      const kind = frame.sessionId;
+      const result = Buffer.concat([frame.data, Buffer.alloc(2)]).readUInt16LE(0);
+      if (kind === EVENT.ENROLL_FINGER) {
+        outcome = result === 0 ? 'DONE' : (result === 5 ? 'DUPLICATE' : 'CANCELLED');
+      } else if (kind === EVENT.FINGER_SCORE) {
+        if (result === 0x64) touch();
+      } else if (!OTHER_EVENTS.has(kind)) {
+        // Firmware que no indica el tipo de evento: se interpreta por el valor.
+        if (result === 0x64) touch();
+        else if (result === 5) outcome = 'DUPLICATE';
+        else if (result === 4 || result === 6) outcome = 'CANCELLED';
+        else if (result === 0 && touches >= 3 && frame.data.length >= 2) outcome = 'DONE';
+      }
     };
     // Mientras el lector captura el dedo no se le envían comandos: solo se escuchan sus avisos.
     while (Date.now() < deadline && outcome === 'TIMEOUT') {
+      // Si ya hubo tres toques y el lector no manda el aviso final, se sale a comprobar el resultado.
+      if (touches >= 3 && Date.now() - lastTouchAt > 5000) break;
       try {
-        const frame = await this.nextFrame(Math.max(250, deadline - Date.now()));
+        const frame = await this.nextFrame(Math.min(1000, Math.max(250, deadline - Date.now())));
         if (frame.code === CMD.REG_EVENT) { this.ackEvent(); handle(frame); }
       } catch (error) {
         if (error.code !== 'TIMEOUT') throw error;
       }
     }
     flags.writeUInt32LE(0, 0);
-    await this.command(CMD.REG_EVENT, flags).catch(() => {});
-    await this.command(CMD.CANCELCAPTURE).catch(() => {});
-    await this.command(CMD.STARTVERIFY).catch(() => {});
-    await this.command(CMD.REFRESHDATA).catch(() => {});
-    const after = (await this.sizes()).fingers;
-    return { enrolled: after > before, outcome: after > before ? 'DONE' : outcome, touches };
+    const quick = { timeoutMs: 3000 };
+    await this.command(CMD.REG_EVENT, flags, quick).catch(() => {});
+    await this.command(CMD.CANCELCAPTURE, Buffer.alloc(0), quick).catch(() => {});
+    await this.command(CMD.STARTVERIFY, Buffer.alloc(0), quick).catch(() => {});
+    await this.command(CMD.REFRESHDATA, Buffer.alloc(0), quick).catch(() => {});
+    const after = await this.sizes().then((sizes) => sizes.fingers).catch(() => null);
+    const enrolled = outcome === 'DONE' || (after != null && after > before);
+    return { enrolled, outcome: enrolled ? 'DONE' : outcome, touches };
   }
 }

@@ -301,6 +301,28 @@ try {
     enroll = await bio.enrollEmployee({ employeeId: dana, deviceId: device.id, replace: true });
     assert.equal(enroll.enrolled, true);
     assert.equal(fake.templatesDeleted, 1, 'Cambiar la huella reemplaza la anterior.');
+    // El lector avisa que terminó: Qubiq responde enseguida, sin esperar el minuto completo.
+    let enrollStarted = Date.now();
+    enroll = await bio.enrollEmployee({ employeeId: dana, deviceId: device.id, replace: true });
+    assert.equal(enroll.enrolled, true);
+    assert.ok(Date.now() - enrollStarted < 5000, 'Debe terminar apenas el lector confirma la huella.');
+    fake.enrollResult = 5;
+    const duplicate = await zktecoDriver.enrollUser({ ip: '127.0.0.1', port: devicePort, commKey: '54321' }, { userId: '3', name: 'Carolina', waitMs: 20000 });
+    assert.equal(duplicate.outcome === 'DUPLICATE' || duplicate.enrolled, true);
+    fake.enrollResult = 0;
+    fake.enrollStyle = 'legacy';
+    enrollStarted = Date.now();
+    const legacy = await zktecoDriver.enrollUser({ ip: '127.0.0.1', port: devicePort, commKey: '54321' }, { userId: '3', name: 'Carolina', waitMs: 20000 });
+    assert.equal(legacy.enrolled, true);
+    assert.equal(legacy.touches, 3);
+    assert.ok(Date.now() - enrollStarted < 5000);
+    fake.enrollSilentEnd = true;
+    enrollStarted = Date.now();
+    const silent = await zktecoDriver.enrollUser({ ip: '127.0.0.1', port: devicePort, commKey: '54321' }, { userId: '3', name: 'Carolina', waitMs: 30000 });
+    assert.equal(silent.enrolled, true, 'Sin aviso final, se confirma por el contador de huellas del lector.');
+    assert.ok(Date.now() - enrollStarted < 12000);
+    fake.enrollSilentEnd = false;
+    fake.enrollStyle = 'modern';
     fake.enrollWorks = false;
     const slow = await zktecoDriver.enrollUser({ ip: '127.0.0.1', port: devicePort, commKey: '54321' }, { userId: '3', name: 'Carolina', waitMs: 900 });
     assert.equal(slow.enrolled, false);

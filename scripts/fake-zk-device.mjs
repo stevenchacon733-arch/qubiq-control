@@ -63,10 +63,10 @@ export class FakeZkDevice {
     });
   }
 
-  #send(socket, code, replyId, data = Buffer.alloc(0)) {
+  #send(socket, code, replyId, data = Buffer.alloc(0), sessionField = SESSION) {
     const body = Buffer.alloc(8 + data.length);
     body.writeUInt16LE(code, 0);
-    body.writeUInt16LE(SESSION, 4);
+    body.writeUInt16LE(sessionField, 4);
     body.writeUInt16LE(replyId, 6);
     data.copy(body, 8);
     body.writeUInt16LE(checksum(body), 2);
@@ -190,14 +190,28 @@ export class FakeZkDevice {
       case CMD.STARTENROLL: {
         ok();
         if (!this.enrollWorks) return undefined;
-        const event = (result, delay) => setTimeout(() => {
-          const body = Buffer.alloc(8);
-          body.writeUInt16LE(result, 0);
-          this.#send(socket, CMD.REG_EVENT, 0, body);
-        }, delay);
-        event(0x64, 30); event(0x64, 60); event(0x64, 90);
-        setTimeout(() => { this.fingers += 1; }, 100);
-        event(0, 120);
+        if (this.enrollStyle === 'legacy') {
+          // Firmware que no indica el tipo de evento: el resultado va en 2 bytes y la sesión es la real.
+          const event = (result, delay) => setTimeout(() => {
+            const body = Buffer.alloc(8);
+            body.writeUInt16LE(result, 0);
+            this.#send(socket, CMD.REG_EVENT, 0, body);
+          }, delay);
+          event(0x64, 30); event(0x64, 60); event(0x64, 90);
+          setTimeout(() => { this.fingers += 1; }, 100);
+          if (!this.enrollSilentEnd) event(0, 120);
+          return undefined;
+        }
+        // Como un terminal real: el tipo de evento viaja en el campo de sesión y la calidad es 1 byte.
+        const emit = (kind, data, delay) => setTimeout(() => this.#send(socket, CMD.REG_EVENT, 0, data, kind), delay);
+        for (const delay of [30, 60, 90]) {
+          emit(2, Buffer.alloc(0), delay);
+          emit(256, Buffer.from([0x64]), delay + 10);
+        }
+        setTimeout(() => { this.fingers += 1; }, 110);
+        const done = Buffer.alloc(6);
+        done.writeUInt16LE(this.enrollResult ?? 0, 0);
+        emit(8, done, 130);
         return undefined;
       }
       case CMD.DEL_USER_TEMP:

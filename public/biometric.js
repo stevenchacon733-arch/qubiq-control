@@ -348,8 +348,16 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
     enrolling = true;
     busy = true;
     buttons.forEach((button) => { button.disabled = true; });
-    $('#fingerMsg').textContent = `Andá al lector: va a pedir el dedo tres veces (ID ${body.zkUserId}). Tenés un minuto.`;
+    const startedAt = Date.now();
+    const waiting = () => {
+      const left = Math.max(0, 60 - Math.round((Date.now() - startedAt) / 1000));
+      $('#fingerMsg').textContent = left > 0
+        ? `Andá al lector: va a pedir el dedo tres veces (ID ${body.zkUserId}). Quedan ${left} s.`
+        : 'Confirmando con el lector...';
+    };
+    waiting();
     $('#fingerMsg').className = 'message show';
+    const countdown = setInterval(waiting, 1000);
     try {
       const result = await api('/api/admin/biometric/enroll', { method: 'POST', body: JSON.stringify(body) });
       form.elements.zkUserId.value = result.zkUserId;
@@ -364,6 +372,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
     } catch (error) {
       msg($('#fingerMsg'), error.message);
     } finally {
+      clearInterval(countdown);
       enrolling = false;
       busy = false;
       buttons.forEach((button) => { button.disabled = false; });
