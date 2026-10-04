@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { inflateRawSync } from 'node:zlib';
 
 function unzip(buffer) {
@@ -77,6 +77,26 @@ try {
   assert.equal(result.response.status, 200);
   assert.equal(result.body.setupRequired, true);
   assert.match(result.response.headers.get('content-security-policy') || '', /default-src 'self'/);
+
+  // El panel solo responde a esta misma computadora. Un pedido que llegó por un túnel o un proxy (cabeceras de
+  // reenvío, o dirigido a otro nombre) no entra, se escriba la ruta como se escriba; la página del QR sí.
+  const forwarded = { 'X-Forwarded-For': '203.0.113.9' };
+  for (const path of ['/api/status', '/API/status', '/api/Admin/employees', '/api/AUTH/login', '/admin.html', '/admin', '/Admin.html',
+    '/%61dmin.html', '/admin%2ejs', '//admin.html', '/setup', '/kiosk.html']) {
+    const blocked = await fetch(base + path, { headers: forwarded });
+    assert.equal(blocked.status, 403, `${path} no debe responder a un pedido reenviado (respondió ${blocked.status}).`);
+  }
+  const statusWithHost = (path, host) => new Promise((done, fail) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path, headers: { Host: host } }, (res) => { res.resume(); res.on('end', () => done(res.statusCode)); });
+    req.on('error', fail);
+    req.end();
+  });
+  assert.equal(await statusWithHost('/admin.html', 'qubiq.ejemplo.com'), 403);
+  assert.equal(await statusWithHost('/api/status', '203.0.113.7:3220'), 403);
+  assert.equal(await statusWithHost('/api/status', `localhost:${port}`), 200);
+  assert.equal((await fetch(`${base}/mark.html`, { headers: forwarded })).status, 200);
+  assert.equal((await fetch(`${base}/app.css`, { headers: forwarded })).status, 200);
+  assert.equal(await statusWithHost('/api/branding', '192.168.1.10:3220'), 200);
 
   result = await request('/api/setup', {
     method: 'POST',

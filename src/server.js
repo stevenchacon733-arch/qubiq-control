@@ -42,15 +42,23 @@ app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   next();
 });
-function isAdminSurface(path = '') {
-  return path === '/' || path === '/admin.html' || path === '/admin.js' || path === '/admin-extra.css' ||
-    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' || path === '/biometric.js' || path === '/branches.js' ||
-    (path === '/setup.html' || path === '/setup.js') || path.startsWith('/api/admin') || path.startsWith('/api/auth') ||
-    path.startsWith('/api/google/oauth') || path === '/api/setup' || path === '/api/status';
-}
+// Lo único que se le atiende a quien no es esta misma computadora: la página con la que el celular marca con
+// el QR. Es una lista cerrada y la ruta tiene que coincidir exacta: cualquier otra forma de escribirla (mayúsculas,
+// %2e, barras dobles, sin extensión) cae del lado de "solo desde esta computadora".
+const LAN_SURFACE = new Set(['/mark.html', '/mark.js', '/app.css', '/qubiq.css',
+  '/api/branding', '/api/attendance/token-info', '/api/attendance/mark']);
+
+// Un pedido que pasó por un túnel o un proxy llega desde esta misma computadora, pero no es de esta computadora.
+// El panel nunca se sirve así: lo único que se publica hacia afuera es el puerto de recepción de sucursales. Se
+// reconoce por las cabeceras que agrega el túnel y porque el pedido viene dirigido a un nombre que no es el local.
+const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'forwarded', 'cf-connecting-ip', 'cf-ray', 'via'];
+const viaProxy = (req) => PROXY_HEADERS.some((header) => req.headers[header] !== undefined);
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const isLocalRequest = (req) => isLoopback(clientIp(req)) && !viaProxy(req)
+  && LOCAL_HOSTS.has(String(req.headers.host || '').toLowerCase().replace(/:\d+$/, ''));
 
 app.use((req, res, next) => {
-  if (isAdminSurface(req.path) && !isLoopback(clientIp(req))) {
+  if (!LAN_SURFACE.has(req.path) && !isLocalRequest(req)) {
     return res.status(403).type('text').send('Administración disponible solo desde la computadora Qubiq.');
   }
   next();
@@ -107,7 +115,8 @@ function isPrivateIp(ip = '') {
 }
 
 function requireLan(req, res, next) {
-  if (!config.requireLan || isPrivateIp(req.socket.remoteAddress)) return next();
+  // Con una dirección pública configurada a propósito (PUBLIC_BASE_URL) hay un proxy propio adelante y se respeta.
+  if (!config.requireLan || (isPrivateIp(req.socket.remoteAddress) && (!viaProxy(req) || Boolean(config.publicBaseUrl)))) return next();
   return res.status(403).json({ error: 'Las marcaciones solo se permiten desde la red local de Qubiq.' });
 }
 
@@ -500,7 +509,7 @@ api.post('/attendance/mark', requireLan, (req, res) => {
 });
 
 // Marcar en la computadora del negocio, sin celular. Vive bajo /api/admin, así que solo responde desde la propia
-// computadora Qubiq (isAdminSurface), y exige sesión de Administrador o Recepción. Respeta el mismo bloqueo de
+// computadora Qubiq (no está en LAN_SURFACE), y exige sesión de Administrador o Recepción. Respeta el mismo bloqueo de
 // licencia que el QR: si no, sería una forma de seguir marcando con la licencia vencida.
 api.post('/admin/attendance/mark', requireAdminOrKiosk, (req, res) => {
   const gate = licenseGate();
