@@ -19,6 +19,50 @@ exige sesión de Administrador o Recepción, y **respeta el mismo bloqueo de lic
 vence, no se puede seguir marcando por ahí. Cada marca guarda su origen en `attendance.source` (`QR` o `APP`) y en
 la bitácora.
 
+## Lector de huella (ZKTeco)
+
+Tercera forma de marcar: el empleado pone el dedo en un terminal ZKTeco y la marcación entra sola a Qubiq. Pasa
+por el **mismo motor** que el QR y la computadora del negocio (`registerAttendance` en
+[src/services/attendance.js](src/services/attendance.js)): entrada/salida, tardanza, jornada y pre-planilla no
+cambian. El origen queda en `attendance.source` como `BIO`.
+
+- **Dónde se configura:** pestaña **Lector de Huella** → *Agregar lector* (IP de la red local y puerto `4370`).
+  Ahí mismo están *Probar conexión*, *Sincronizar ahora*, *Descargar marcaciones*, *Diagnóstico*, *Configurar* y
+  *Desactivar*, la tabla de empleados con su ID biométrico, las últimas marcaciones y el registro de sincronización.
+- **Huella de un empleado:** al crear o editar un empleado, *Asignar o cambiar huella digital* le pone el ID, lo
+  crea en el lector y deja el lector pidiendo el dedo. La huella se guarda **solo en el lector**: Qubiq no almacena
+  imágenes ni plantillas biométricas, solo `ID del lector ↔ empleado`.
+- **Agente:** no hay servicio de Windows aparte. El sondeo corre dentro del proceso de Qubiq, que ya arranca con
+  Windows y queda en la bandeja (`startBiometricWorker` en [src/server.js](src/server.js)). Consulta el lector cada
+  30 s; si el contador de marcaciones no cambió no descarga nada, y cada 10 min descarga igual por seguridad.
+- **Sin duplicados:** cada marcación se guarda una sola vez (`UNIQUE(device_id, zk_user_id, punched_local,
+  verify_status, punch_state)` en `biometric_events`), así que descargar dos veces lo mismo no crea dos registros.
+  Nunca se borra nada del lector.
+- **Si el lector se cae:** Qubiq sigue funcionando, lo muestra *Desconectado*, reintenta solo y al volver descarga
+  lo pendiente. Las marcaciones hechas mientras tanto quedan guardadas en el lector.
+- **Doble toque:** si alguien pone el dedo dos veces seguidas, la segunda se ignora durante *Ignorar doble toque*
+  (120 s por defecto) para no cerrar la jornada por error.
+- **IDs:** Qubiq sugiere siempre un ID nuevo y no reutiliza el de un empleado eliminado, para que marcaciones
+  viejas de esa huella no se le atribuyan a otra persona.
+- **Licencia:** con la licencia bloqueada no se registran marcaciones de huella (misma regla que el QR). Quedan en
+  el lector y entran cuando la licencia vuelve a estar activa.
+- **Seguridad:** solo se aceptan IPs de red local, la clave de comunicación se guarda cifrada y nunca se devuelve,
+  todo tiene tiempo límite, y las rutas viven bajo `/api/admin` (solo desde la computadora Qubiq, con sesión de
+  Administrador). El puerto 4370 nunca debe abrirse a internet.
+
+El protocolo es el tradicional de ZKTeco por TCP (binario, **no** HTTP):
+[src/services/biometric/zkProtocol.js](src/services/biometric/zkProtocol.js). El resto de Qubiq solo conoce el
+driver ([zktecoDriver.js](src/services/biometric/zktecoDriver.js)), así que otro modelo se agrega registrando un
+driver nuevo en [index.js](src/services/biometric/index.js).
+
+`npm run test:biometric` prueba todo contra un lector simulado
+([scripts/fake-zk-device.mjs](scripts/fake-zk-device.mjs)): conexión, caída, timeout, IDs sin vincular, duplicados,
+reconexión, fechas inválidas, licencia y reinicios. **El simulador sigue el protocolo documentado, no un firmware
+real:** antes de publicar un release que toque esta parte, probá contra el lector físico.
+
+ZKBio Time.Net puede seguir instalado para administrar el lector, pero que **no** borre las marcaciones al
+descargarlas: Qubiq las necesita en el lector.
+
 ## Planilla en Excel
 
 En **Pre-planilla → Descargar Excel** la app genera un libro `.xlsx` (sin depender de Excel ni de Google) con:

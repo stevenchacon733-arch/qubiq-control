@@ -125,6 +125,83 @@ CREATE TABLE IF NOT EXISTS day_status (
 CREATE INDEX IF NOT EXISTS idx_mail_queue_status ON mail_queue(status, next_attempt_at);
 `);
 
+// Lectores biométricos. Solo se guardan IDs y marcaciones: nunca huellas ni plantillas.
+db.exec(`
+CREATE TABLE IF NOT EXISTS biometric_devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  driver TEXT NOT NULL DEFAULT 'zkteco',
+  ip TEXT NOT NULL,
+  port INTEGER NOT NULL DEFAULT 4370 CHECK(port BETWEEN 1 AND 65535),
+  device_number INTEGER NOT NULL DEFAULT 1,
+  comm_key_sealed TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  poll_seconds INTEGER NOT NULL DEFAULT 30,
+  min_gap_seconds INTEGER NOT NULL DEFAULT 120,
+  import_since TEXT NOT NULL,
+  last_contact_at TEXT,
+  last_sync_at TEXT,
+  last_error TEXT NOT NULL DEFAULT '',
+  last_error_at TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_record_count INTEGER,
+  last_event_local TEXT,
+  info_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(ip, port)
+);
+
+CREATE TABLE IF NOT EXISTS employee_biometric_map (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL,
+  device_id INTEGER NOT NULL,
+  zk_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(employee_id) REFERENCES employees(id),
+  FOREIGN KEY(device_id) REFERENCES biometric_devices(id),
+  UNIQUE(device_id, zk_user_id),
+  UNIQUE(device_id, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS biometric_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id INTEGER NOT NULL,
+  zk_user_id TEXT NOT NULL,
+  punched_local TEXT NOT NULL,
+  occurred_at TEXT,
+  verify_status INTEGER NOT NULL DEFAULT 0,
+  punch_state INTEGER NOT NULL DEFAULT 0,
+  employee_id INTEGER,
+  attendance_id INTEGER,
+  status TEXT NOT NULL CHECK(status IN ('APPLIED','UNMAPPED','REJECTED','IGNORED','INVALID')),
+  note TEXT NOT NULL DEFAULT '',
+  received_at TEXT NOT NULL,
+  processed_at TEXT,
+  FOREIGN KEY(device_id) REFERENCES biometric_devices(id),
+  UNIQUE(device_id, zk_user_id, punched_local, verify_status, punch_state)
+);
+
+CREATE TABLE IF NOT EXISTS biometric_sync_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id INTEGER,
+  device_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  result TEXT NOT NULL,
+  received INTEGER NOT NULL DEFAULT 0,
+  imported INTEGER NOT NULL DEFAULT 0,
+  duplicates INTEGER NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bio_events_device_time ON biometric_events(device_id, punched_local);
+CREATE INDEX IF NOT EXISTS idx_bio_events_status ON biometric_events(device_id, zk_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_bio_logs_device ON biometric_sync_logs(device_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bio_events_attendance ON biometric_events(attendance_id) WHERE attendance_id IS NOT NULL;
+`);
+
 export const getSetting = (key) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
 export const setSetting = (key, value) => db.prepare(`
   INSERT INTO settings(key, value) VALUES(?, ?)

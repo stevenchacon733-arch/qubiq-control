@@ -145,23 +145,37 @@ export function archiveEmployee(id) {
   const employee = db.prepare('SELECT employee_code, name FROM employees WHERE id = ? AND COALESCE(archived, 0) = 0').get(employeeId);
   if (!employee) throw new Error('Empleado no encontrado.');
   db.prepare('UPDATE employees SET active = 0, archived = 1 WHERE id = ?').run(employeeId);
+  db.prepare('DELETE FROM employee_biometric_map WHERE employee_id = ?').run(employeeId);
   audit('ADMIN', 'ARCHIVE', 'EMPLOYEE', employeeId, employee);
 }
 
 const MARK_SOURCES = new Set(['QR', 'APP']);
+const ENGINE_SOURCES = new Set(['QR', 'APP', 'BIO']);
 
-// source: 'QR' cuando el empleado escanea con su celular, 'APP' cuando marca en la computadora del negocio.
-export function markAttendance({ tokenPayload = null, employeeCode, pin, source = 'QR' }) {
-  if (!MARK_SOURCES.has(source)) throw new Error('Origen de marcación inválido.');
-  const employee = db.prepare(`SELECT e.*, s.name AS schedule_name, s.start_time, s.end_time,
-                                      s.tolerance_minutes, s.work_days
-                               FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
-                               WHERE e.employee_code = ? AND e.active = 1 AND COALESCE(e.archived, 0) = 0`)
-    .get(String(employeeCode || '').trim().toUpperCase());
-  if (!employee || !verifySecret(pin, employee.pin_hash)) throw new Error('Código o PIN incorrecto.');
+const ENGINE_EMPLOYEE_SQL = `SELECT e.*, s.name AS schedule_name, s.start_time, s.end_time,
+                                    s.tolerance_minutes, s.work_days
+                             FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
+                             WHERE e.active = 1 AND COALESCE(e.archived, 0) = 0`;
+
+export class AttendanceRuleError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export function activeEmployeeById(id) {
+  return db.prepare(`${ENGINE_EMPLOYEE_SQL} AND e.id = ?`).get(Number(id)) || null;
+}
+
+// Motor único de asistencia: decide entrada o salida, tardanza y jornada. El QR ('QR'), la computadora del
+// negocio ('APP') y el lector de huella ('BIO') solo cambian cómo llega la marcación y a qué hora ocurrió.
+export function registerAttendance(employee, { at = new Date(), source = 'QR', nonce = null, minGapSeconds = 0 } = {}) {
+  if (!ENGINE_SOURCES.has(source)) throw new Error('Origen de marcación inválido.');
   if (!employee.schedule_id) throw new Error('Este empleado no tiene un horario asignado.');
 
-  const now = new Date();
+  const now = at;
+  const external = source === 'BIO';
   const openEntry = db.prepare(`SELECT a.* FROM attendance a
     WHERE a.employee_id = ? AND a.event_type = 'ENTRY'
       AND NOT EXISTS (SELECT 1 FROM attendance x WHERE x.employee_id = a.employee_id
@@ -174,6 +188,12 @@ export function markAttendance({ tokenPayload = null, employeeCode, pin, source 
   let delta = 0;
 
   if (openEntry) {
+    if (external) {
+      // El lector puede entregar marcaciones atrasadas o repetidas (dos toques seguidos del mismo dedo).
+      const sinceEntryMs = now.getTime() - Date.parse(openEntry.occurred_at);
+      if (sinceEntryMs <= 0) throw new AttendanceRuleError('La marcación es anterior a una entrada ya registrada.', 'OUT_OF_ORDER');
+      if (sinceEntryMs < minGapSeconds * 1000) throw new AttendanceRuleError('Marcación repetida: se conserva la entrada ya registrada.', 'REPEATED');
+    }
     const ageMinutes = minutesBetween(openEntry.occurred_at, now.toISOString());
     if (ageMinutes > 20 * 60) {
       throw new Error(`Hay una entrada pendiente del ${openEntry.work_date}. El administrador debe corregirla antes de una nueva marcación.`);
@@ -193,16 +213,25 @@ export function markAttendance({ tokenPayload = null, employeeCode, pin, source 
     delta = Math.max(0, late);
   }
 
-  db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time,
+  const inserted = db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time,
                                      status, minutes_delta, source, qr_nonce, created_at)
                               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, source,
-      tokenPayload?.nonce ?? null, nowIso());
+    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, source, nonce, nowIso());
 
   audit(`EMPLOYEE:${employee.employee_code}`, 'MARK', 'ATTENDANCE', employee.id, { date, eventType, status, delta, source });
   return { employee: employee.name, employeeId: employee.id, employeeCode: employee.employee_code,
     eventType, time: localTime(now).slice(0, 5), status, lateMinutes: delta,
-    notificationEmail: employee.email || '', date };
+    notificationEmail: employee.email || '', date, attendanceId: Number(inserted.lastInsertRowid) };
+}
+
+// source: 'QR' cuando el empleado escanea con su celular, 'APP' cuando marca en la computadora del negocio.
+export function markAttendance({ tokenPayload = null, employeeCode, pin, source = 'QR' }) {
+  if (!MARK_SOURCES.has(source)) throw new Error('Origen de marcación inválido.');
+  const employee = db.prepare(`${ENGINE_EMPLOYEE_SQL} AND e.employee_code = ?`)
+    .get(String(employeeCode || '').trim().toUpperCase());
+  if (!employee || !verifySecret(pin, employee.pin_hash)) throw new Error('Código o PIN incorrecto.');
+  const { attendanceId, ...result } = registerAttendance(employee, { source, nonce: tokenPayload?.nonce ?? null });
+  return result;
 }
 
 export function dailyOverview(date = localDate()) {

@@ -48,3 +48,38 @@
 .danger-review{border-color:#F3C9C9}
 .review-item .badge{justify-self:end}
 @media(max-width:520px){.review-item{grid-template-columns:1fr}.review-item .badge{justify-self:start}}
+.system-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.check-row{display:flex;align-items:center;gap:8px;color:var(--text)}
+.check-row input{width:auto}
+.finger-zone{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0 0;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--green-soft)}
+.finger-zone .btn{flex:0 0 auto}
+.bio-block{margin-top:16px}
+.bio-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px;align-items:start}
+.bio-table{min-width:0}
+.bio-table td{font-size:13px;vertical-align:top}
+.bio-devices{display:grid;gap:14px}
+.bio-device{border:1px solid var(--line);border-radius:14px;padding:18px;background:var(--card)}
+.bio-device.off{background:var(--bg)}
+.bio-device-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.bio-device-head h3{margin:0 0 2px;font-size:18px}
+.bio-state{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.bio-state.good{background:var(--green-soft);border-color:var(--green);color:var(--green-hover)}
+.bio-state.bad{background:#FDEEEE;border-color:#F3C9C9;color:var(--red)}
+.bio-state.warn{background:#FBF3E2;border-color:#F3DFB8;color:#9A6B0E}
+.bio-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0 4px}
+.bio-facts>div{padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.bio-facts span{display:block;font-size:12px;color:var(--muted)}
+.bio-facts strong{display:block;margin-top:3px;font-size:16px;font-variant-numeric:tabular-nums}
+.bio-device .message{margin-top:10px}
+.bio-device .button-row{margin-bottom:0}
+.bio-diag{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 18px;margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+.bio-diag div{min-width:0}
+.bio-diag span{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.bio-diag b{font-weight:700;font-size:13px;overflow-wrap:anywhere}
+.bio-id{display:flex;align-items:center;gap:8px}
+.bio-id input{width:110px}
+.bio-empty{padding:26px;border:1px dashed var(--line);border-radius:14px;text-align:center;color:var(--muted)}
+.btn:disabled,.mini-btn:disabled{opacity:.55;cursor:default}
+@media(max-width:1000px){.bio-two{grid-template-columns:1fr}.bio-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.bio-diag{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.system-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.system-grid{grid-template-columns:1fr}.finger-zone{flex-direction:column;align-items:stretch}.bio-device-head{flex-direction:column}}

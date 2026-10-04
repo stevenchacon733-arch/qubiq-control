@@ -19,6 +19,10 @@ import { publicIntegrationStatus, saveMailConfig } from './services/integrationC
 import { assertNotLocked, guardConfig, registerFailure, resetFailures } from './services/guard.js';
 import { backupStatus, createBackup, startBackupScheduler, stopBackupScheduler } from './services/backup.js';
 import { checkLicense, licenseGate, licenseStatus, saveLicenseKey, startLicenseScheduler, stopLicenseScheduler } from './services/license.js';
+import {
+  biometricSummary, createDevice, diagnostics, employeeBiometrics, enrollEmployee, listDevices, listEvents, listLogs,
+  listMappings, setDeviceActive, setMapping, startBiometricWorker, stopBiometricWorker, syncDevice, testConnection, updateDevice
+} from './services/biometric/index.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -39,7 +43,7 @@ app.use((req, res, next) => {
 });
 function isAdminSurface(path = '') {
   return path === '/' || path === '/admin.html' || path === '/admin.js' || path === '/admin-extra.css' ||
-    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' ||
+    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' || path === '/biometric.js' ||
     (path === '/setup.html' || path === '/setup.js') || path.startsWith('/api/admin') || path.startsWith('/api/auth') ||
     path.startsWith('/api/google/oauth') || path === '/api/setup' || path === '/api/status';
 }
@@ -221,6 +225,7 @@ api.get('/admin/system', requireAdmin, (_req, res) => res.json({
   mailQueue: mailQueueStats(),
   backup: backupStatus(),
   license: licenseStatus(),
+  biometric: biometricSummary(),
   kioskEnabled: Boolean(getSetting('kiosk_password_hash')),
   security: guardConfig
 }));
@@ -414,6 +419,28 @@ api.post('/admin/sync/google-sheets', requireAdmin, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ---------- Lector de huella ----------
+// Todo vive bajo /api/admin: solo responde desde la computadora Qubiq y con sesión de Administrador.
+const bioRoute = (handler) => async (req, res) => {
+  try { res.json(await handler(req)); }
+  catch (error) { res.status(error.status || 400).json({ error: error.message }); }
+};
+api.get('/admin/biometric/devices', requireAdmin, bioRoute(() => listDevices()));
+api.post('/admin/biometric/devices', requireAdmin, bioRoute((req) => createDevice(req.body)));
+api.patch('/admin/biometric/devices/:id', requireAdmin, bioRoute((req) => updateDevice(req.params.id, req.body)));
+api.patch('/admin/biometric/devices/:id/active', requireAdmin, bioRoute((req) => setDeviceActive(req.params.id, Boolean(req.body.active))));
+api.post('/admin/biometric/devices/:id/test', requireAdmin, bioRoute((req) => testConnection(req.params.id)));
+api.post('/admin/biometric/devices/:id/sync', requireAdmin, bioRoute((req) => syncDevice(req.params.id, {
+  manual: true, full: Boolean(req.body.full), action: req.body.full ? 'Descarga de marcaciones' : 'Sincronización manual'
+})));
+api.get('/admin/biometric/devices/:id/diagnostics', requireAdmin, bioRoute((req) => diagnostics(req.params.id)));
+api.get('/admin/biometric/devices/:id/mappings', requireAdmin, bioRoute((req) => listMappings(req.params.id)));
+api.put('/admin/biometric/mappings', requireAdmin, bioRoute((req) => setMapping(req.body)));
+api.get('/admin/biometric/employees/:id', requireAdmin, bioRoute((req) => employeeBiometrics(req.params.id)));
+api.post('/admin/biometric/enroll', requireAdmin, bioRoute((req) => enrollEmployee(req.body)));
+api.get('/admin/biometric/logs', requireAdmin, bioRoute((req) => listLogs({ deviceId: req.query.deviceId, limit: req.query.limit })));
+api.get('/admin/biometric/events', requireAdmin, bioRoute((req) => listEvents({ deviceId: req.query.deviceId, limit: req.query.limit })));
+
 api.get('/admin/qr.png', requireAdminOrKiosk, async (_req, res) => {
   const gate = licenseGate();
   if (gate.blockQrGeneration) return res.status(402).json({ error: gate.banner?.text || 'La licencia no está activa.' });
@@ -491,7 +518,8 @@ export function startServer({ quiet = false } = {}) {
       startMailWorker();
       startBackupScheduler();
       startLicenseScheduler();
-      server.once('close', () => { stopMailWorker(); stopBackupScheduler(); stopLicenseScheduler(); });
+      startBiometricWorker();
+      server.once('close', () => { stopMailWorker(); stopBackupScheduler(); stopLicenseScheduler(); stopBiometricWorker(); });
       resolve(server);
     });
     server.once('error', reject);

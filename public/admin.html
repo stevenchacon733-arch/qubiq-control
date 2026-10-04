@@ -39,6 +39,7 @@
     <button class="tab" data-tab="employees">Empleados</button>
     <button class="tab" data-tab="schedules">Horarios</button>
     <button class="tab" data-tab="payroll">Pre-planilla</button>
+    <button class="tab" data-tab="biometric">Lector de Huella</button>
     <button class="tab" data-tab="settings">Configuración</button>
   </nav>
 
@@ -57,6 +58,7 @@
         <div><span id="stSheets" class="status-dot"></span><strong> Google Sheets</strong><small id="stSheetsText" class="muted">Revisando...</small><button id="googleConnect" type="button" class="mini-btn google-connect">Conectar Google</button><input id="googleClientFile" type="file" accept="application/json,.json" hidden></div>
         <div><span id="stBackup" class="status-dot"></span><strong> Copia de seguridad</strong><small id="stBackupText" class="muted">Revisando...</small></div>
         <div><span id="stLicense" class="status-dot"></span><strong> Licencia</strong><small id="stLicenseText" class="muted">Revisando...</small></div>
+        <div><span id="stBio" class="status-dot"></span><strong> Lector de huella</strong><small id="stBioText" class="muted">Revisando...</small></div>
       </div>
     </div>
     <div class="grid layout">
@@ -108,6 +110,7 @@
         <label>Salario por hora<input name="hourlyRate" type="number" min="0" max="1000000" step="0.01" placeholder="Se usa en la planilla de Excel"></label>
         <label>PIN de marcación<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required placeholder="4-8 dígitos"></label>
         <label>Horario<select name="scheduleId" id="employeeSchedule"><option value="">Sin horario</option></select></label>
+        <label class="check-row"><input type="checkbox" name="assignFinger"> Asignar huella digital al crear</label>
         <button class="btn">Crear empleado</button>
         <div id="employeeMsg" class="message"></div>
       </form>
@@ -186,6 +189,50 @@
     </div>
   </section>
 
+  <section id="biometric" class="panel">
+    <div class="card">
+      <div class="section-head">
+        <div><h2>Configurar Lector de Huella</h2><span class="muted">El lector guarda y verifica las huellas. Qubiq solo recibe quién marcó y a qué hora, y registra la asistencia solo.</span></div>
+        <button id="bioAddDevice" type="button" class="btn">Agregar lector</button>
+      </div>
+      <div id="bioDevices" class="bio-devices"><p class="muted">Cargando...</p></div>
+    </div>
+
+    <div class="card bio-block">
+      <div class="section-head">
+        <div><h2>Empleados y huellas</h2><span class="muted">Cada empleado usa en el lector el mismo ID que tiene aquí. Un ID no puede repetirse en el mismo lector.</span></div>
+        <div class="button-row compact"><select id="bioMapDevice" aria-label="Lector"></select></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Empleado</th><th>ID Qubiq</th><th>ID biométrico</th><th>Estado</th><th>Huella</th></tr></thead>
+          <tbody id="bioMapBody"><tr><td colspan="5">Agregá un lector para vincular empleados.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="bio-two">
+      <div class="card">
+        <div class="section-head"><div><h2>Últimas marcaciones del lector</h2><span class="muted">Lo que llegó del lector y qué se hizo con cada marcación.</span></div></div>
+        <div class="table-wrap">
+          <table class="bio-table">
+            <thead><tr><th>Fecha y hora</th><th>ID</th><th>Empleado</th><th>Resultado</th></tr></thead>
+            <tbody id="bioEventBody"><tr><td colspan="4">Sin marcaciones todavía.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-head"><div><h2>Registro de sincronización</h2><span class="muted">Historial técnico de cada conexión con el lector.</span></div></div>
+        <div class="table-wrap">
+          <table class="bio-table">
+            <thead><tr><th>Fecha y hora</th><th>Lector</th><th>Acción</th><th>Resultado</th></tr></thead>
+            <tbody id="bioLogBody"><tr><td colspan="4">Sin registros todavía.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="settings" class="panel">
     <div class="settings-grid">
       <form id="companySettingsForm" class="card">
@@ -245,6 +292,10 @@
     <label>Salario por hora<input name="hourlyRate" type="number" min="0" max="1000000" step="0.01" placeholder="Se usa en la planilla de Excel"></label>
     <label>Nuevo PIN (opcional)<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="4-8 dígitos"></label>
     <label>Horario<select name="scheduleId" id="editEmployeeSchedule"><option value="">Sin horario</option></select></label>
+    <div class="finger-zone">
+      <div><strong>Huella digital</strong><br><small id="editEmployeeFingerInfo" class="muted">Para marcar con el lector de huella.</small></div>
+      <button type="button" id="editEmployeeFinger" class="btn secondary">Asignar o cambiar huella digital</button>
+    </div>
     <div class="danger-zone">
       <div><strong>Eliminar de la lista</strong><br><small class="muted">Conserva el historial de asistencia y planillas anteriores.</small></div>
       <button type="button" id="deleteEmployee" class="btn danger">Eliminar empleado</button>
@@ -275,6 +326,59 @@
       <button class="btn">Guardar cambios</button>
     </div>
     <div id="editScheduleMsg" class="message"></div>
+  </form>
+</div>
+
+<div id="bioDeviceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bioDeviceTitle">
+  <form id="bioDeviceForm" class="card modal-card" autocomplete="off">
+    <div class="section-head">
+      <div><h2 id="bioDeviceTitle">Agregar lector</h2><span class="muted">El lector debe estar en la misma red que esta computadora.</span></div>
+      <button type="button" id="closeBioDeviceModal" class="icon-btn" aria-label="Cerrar">×</button>
+    </div>
+    <input type="hidden" name="id">
+    <label>Nombre<input name="name" maxlength="80" required placeholder="Ej. ZKTeco Entrada"></label>
+    <div class="form-row">
+      <label>IP del lector<input name="ip" maxlength="15" required inputmode="decimal" placeholder="Ej. 192.168.1.202"></label>
+      <label>Puerto<input name="port" type="number" min="1" max="65535" value="4370" required></label>
+    </div>
+    <div class="form-row">
+      <label>Número de dispositivo<input name="deviceNumber" type="number" min="1" max="254" value="1" required></label>
+      <label>Clave de comunicación<input name="commKey" type="password" inputmode="numeric" maxlength="9" autocomplete="new-password" placeholder="Vacía si el lector no tiene"></label>
+    </div>
+    <label>Ubicación o sucursal<input name="location" maxlength="120" placeholder="Ej. Entrada principal"></label>
+    <div class="form-row">
+      <label>Sincronizar cada (segundos)<input name="pollSeconds" type="number" min="10" max="3600" value="30" required></label>
+      <label>Ignorar doble toque (segundos)<input name="minGapSeconds" type="number" min="0" max="3600" value="120" required></label>
+    </div>
+    <p class="muted">Si alguien pone el dedo dos veces seguidas, la segunda marcación se ignora durante ese tiempo para no cerrar la jornada por error.</p>
+    <div class="modal-actions">
+      <button type="button" id="cancelBioDevice" class="btn secondary">Cancelar</button>
+      <button class="btn">Guardar lector</button>
+    </div>
+    <div id="bioDeviceMsg" class="message"></div>
+  </form>
+</div>
+
+<div id="fingerModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="fingerTitle">
+  <form id="fingerForm" class="card modal-card" autocomplete="off">
+    <div class="section-head">
+      <div><h2 id="fingerTitle">Asignar o cambiar huella digital</h2><span class="muted" id="fingerEmployee"></span></div>
+      <button type="button" id="closeFingerModal" class="icon-btn" aria-label="Cerrar">×</button>
+    </div>
+    <input type="hidden" name="employeeId">
+    <div class="form-row">
+      <label>Lector<select name="deviceId" required></select></label>
+      <label>ID biométrico<input name="zkUserId" inputmode="numeric" pattern="[1-9][0-9]{0,8}" maxlength="9" required></label>
+    </div>
+    <div class="info-box">
+      <strong>Cómo funciona</strong><br>
+      <small class="muted">1. Tocá <b>Registrar huella en el lector</b>. 2. Qubiq crea al empleado en el lector con ese ID. 3. El lector pide el dedo tres veces. La huella queda guardada solo en el lector.</small>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="fingerSaveId" class="btn secondary">Solo guardar el ID</button>
+      <button class="btn" id="fingerEnroll">Registrar huella en el lector</button>
+    </div>
+    <div id="fingerMsg" class="message" role="status" aria-live="polite"></div>
   </form>
 </div>
 

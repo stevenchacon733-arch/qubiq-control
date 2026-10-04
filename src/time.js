@@ -33,3 +33,23 @@ export function localMinutes(date = new Date()) {
 export function minutesBetween(isoStart, isoEnd) {
   return Math.max(0, Math.round((new Date(isoEnd) - new Date(isoStart)) / 60000));
 }
+
+const zoneParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: config.timezone, hourCycle: 'h23',
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+});
+
+function zoneOffsetMs(ms) {
+  const p = Object.fromEntries(zoneParts.formatToParts(new Date(ms)).filter(x => x.type !== 'literal').map(x => [x.type, Number(x.value)]));
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms;
+}
+
+// Convierte una hora de reloj local ("YYYY-MM-DD HH:MM:SS") de la zona configurada a un instante real.
+export function zonedToDate(stamp) {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(String(stamp));
+  if (!match) return null;
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  const wall = Date.UTC(y, mo - 1, d, h, mi, s);
+  const first = wall - zoneOffsetMs(wall);
+  return new Date(wall - zoneOffsetMs(first));
+}

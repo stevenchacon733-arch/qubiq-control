@@ -1,4 +1,5 @@
 import { mountAppMark } from '/app-mark.js';
+import { mountBiometric } from '/biometric.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -177,6 +178,7 @@ async function loadSystem() {
     ? `Último: ${new Date(backupAt).toLocaleString()} · Automático diario 21:00`
     : 'Automático diario 21:00';
   renderLicense(data.license || {});
+  biometric.renderSummary(data.biometric);
   return data;
 }
 
@@ -293,6 +295,7 @@ function openEmployeeModal(id) {
   clearMsg($('#editEmployeeMsg'));
   $('#employeeModal').classList.remove('hidden');
   form.elements.name.focus();
+  biometric.describeEmployee(employee.id);
 }
 
 async function loadEmployees() {
@@ -379,6 +382,7 @@ $$('nav.tabs .tab').forEach((button) => {
     button.classList.add('active');
     $(`#${button.dataset.tab}`).classList.add('active');
     if (button.dataset.tab === 'settings') loadSettings().catch((error) => toast(error.message, false));
+    if (button.dataset.tab === 'biometric') biometric.show();
   };
 });
 
@@ -496,13 +500,17 @@ $('#employeeForm').onsubmit = async (event) => {
   clearMsg($('#employeeMsg'));
 
   try {
-    await api('/api/admin/employees', {
+    const body = Object.fromEntries(formData);
+    const assignFinger = Boolean(body.assignFinger);
+    delete body.assignFinger;
+    const created = await api('/api/admin/employees', {
       method: 'POST',
-      body: JSON.stringify(Object.fromEntries(formData))
+      body: JSON.stringify(body)
     });
     form.reset();
     msg($('#employeeMsg'), 'Empleado creado.', true);
     await Promise.all([loadEmployees(), loadOverview()]);
+    if (assignFinger) biometric.openFinger(created.id, body.name);
   } catch (error) {
     msg($('#employeeMsg'), error.message);
   }
@@ -544,13 +552,18 @@ $('#deleteEmployee').onclick = async () => {
   }
 };
 
+$('#editEmployeeFinger').onclick = () => {
+  const form = $('#editEmployeeForm');
+  biometric.openFinger(form.elements.id.value, form.elements.name.value);
+};
+
 $('#closeEmployeeModal').onclick = closeEmployeeModal;
 $('#cancelEmployeeEdit').onclick = closeEmployeeModal;
 $('#employeeModal').onclick = (event) => {
   if (event.target === $('#employeeModal')) closeEmployeeModal();
 };
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !$('#employeeModal').classList.contains('hidden')) closeEmployeeModal();
+  if (event.key === 'Escape' && !$('#employeeModal').classList.contains('hidden') && $('#fingerModal').classList.contains('hidden')) closeEmployeeModal();
 });
 
 $('#scheduleForm').onsubmit = async (event) => {
@@ -718,6 +731,15 @@ setInterval(() => {
 }, 60000);
 
 mountAppMark($('#appMarkForm'), { onMarked: () => loadOverview().catch(() => {}) });
+
+const biometric = mountBiometric({
+  $, $$, api, msg, clearMsg, toast, esc,
+  businessName: () => {
+    const name = appStatus?.company?.businessName;
+    return name && name !== 'Mi negocio' ? name : '';
+  },
+  reloadEmployees: () => loadEmployees()
+});
 
 boot().catch((error) => {
   console.error(error);
