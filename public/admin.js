@@ -1,5 +1,6 @@
 import { mountAppMark } from '/app-mark.js';
 import { mountBiometric } from '/biometric.js';
+import { mountBranches } from '/branches.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -381,7 +382,10 @@ $$('nav.tabs .tab').forEach((button) => {
     $$('.panel').forEach((panel) => panel.classList.remove('active'));
     button.classList.add('active');
     $(`#${button.dataset.tab}`).classList.add('active');
-    if (button.dataset.tab === 'settings') loadSettings().catch((error) => toast(error.message, false));
+    if (button.dataset.tab === 'settings') {
+      loadSettings().catch((error) => toast(error.message, false));
+      branches.load().catch((error) => toast(error.message, false));
+    }
     if (button.dataset.tab === 'biometric') biometric.show();
   };
 });
@@ -740,6 +744,8 @@ const biometric = mountBiometric({
   },
   reloadEmployees: () => loadEmployees()
 });
+
+const branches = mountBranches({ $, $$, api, msg, clearMsg, toast, esc });
 
 boot().catch((error) => {
   console.error(error);

@@ -345,6 +345,43 @@ try {
   result = await request('/api/status');
   assert.equal(result.body.kioskEnabled, false);
 
+  // ----- Sucursales -----
+  result = await request('/api/admin/branches');
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.length, 1, 'La sucursal que ya existía pasa a ser la primera.');
+  assert.equal(result.body[0].name, 'Sucursal Central');
+  assert.equal(result.body[0].code, 'SUC');
+  const firstBranchId = result.body[0].id;
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'Aguas Zarcas' } });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.code, 'AGZ');
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'Venecia' } });
+  assert.equal(result.body.code, 'VEN');
+  const veneciaId = result.body.id;
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'Venado', code: 'ven' } });
+  assert.equal(result.response.status, 400);
+  assert.match(result.body.error, /código/);
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'venecia' } });
+  assert.equal(result.response.status, 400);
+  assert.match(result.body.error, /nombre/);
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'Vendaval' } });
+  assert.equal(result.body.code, 'VEN2', 'Un código repetido se resuelve solo.');
+  result = await request('/api/admin/branches', { method: 'POST', body: { name: 'Otra', code: 'A B' } });
+  assert.equal(result.response.status, 400);
+  result = await request(`/api/admin/branches/${veneciaId}`, { method: 'PATCH', body: { name: 'Venecia Centro' } });
+  assert.equal(result.body.name, 'Venecia Centro');
+  assert.equal(result.body.code, 'VEN', 'Cambiar el nombre no cambia el código.');
+  result = await request(`/api/admin/branches/${veneciaId}/active`, { method: 'PATCH', body: { active: false } });
+  assert.equal(result.body.active, false);
+  result = await request('/api/admin/branches');
+  assert.equal(result.body.length, 4);
+  for (const branch of result.body.filter((item) => item.active && item.id !== firstBranchId)) {
+    await request(`/api/admin/branches/${branch.id}/active`, { method: 'PATCH', body: { active: false } });
+  }
+  result = await request(`/api/admin/branches/${firstBranchId}/active`, { method: 'PATCH', body: { active: false } });
+  assert.equal(result.response.status, 400, 'No se puede quedar sin sucursales activas.');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM branches').get().n, 4, 'Las sucursales no se borran.');
+
   const integrity = db.prepare('PRAGMA integrity_check').get();
   assert.equal(integrity.integrity_check, 'ok');
   result = await request('/api/auth/logout', { method: 'POST' });

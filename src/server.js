@@ -19,6 +19,7 @@ import { publicIntegrationStatus, saveMailConfig } from './services/integrationC
 import { assertNotLocked, guardConfig, registerFailure, resetFailures } from './services/guard.js';
 import { backupStatus, createBackup, startBackupScheduler, stopBackupScheduler } from './services/backup.js';
 import { checkLicense, licenseGate, licenseStatus, saveLicenseKey, startLicenseScheduler, stopLicenseScheduler } from './services/license.js';
+import { createBranch, listBranches, setBranchActive, updateBranch } from './services/branches.js';
 import {
   biometricSummary, createDevice, diagnostics, employeeBiometrics, enrollEmployee, listDevices, listEvents, listLogs,
   listMappings, setDeviceActive, setMapping, startBiometricWorker, stopBiometricWorker, syncDevice, testConnection, updateDevice
@@ -43,7 +44,7 @@ app.use((req, res, next) => {
 });
 function isAdminSurface(path = '') {
   return path === '/' || path === '/admin.html' || path === '/admin.js' || path === '/admin-extra.css' ||
-    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' || path === '/biometric.js' ||
+    path === '/kiosk.html' || path === '/kiosk.js' || path === '/app-mark.js' || path === '/biometric.js' || path === '/branches.js' ||
     (path === '/setup.html' || path === '/setup.js') || path.startsWith('/api/admin') || path.startsWith('/api/auth') ||
     path.startsWith('/api/google/oauth') || path === '/api/setup' || path === '/api/status';
 }
@@ -440,6 +441,12 @@ api.get('/admin/biometric/employees/:id', requireAdmin, bioRoute((req) => employ
 api.post('/admin/biometric/enroll', requireAdmin, bioRoute((req) => enrollEmployee(req.body)));
 api.get('/admin/biometric/logs', requireAdmin, bioRoute((req) => listLogs({ deviceId: req.query.deviceId, limit: req.query.limit })));
 api.get('/admin/biometric/events', requireAdmin, bioRoute((req) => listEvents({ deviceId: req.query.deviceId, limit: req.query.limit })));
+
+// ---------- Sucursales ----------
+api.get('/admin/branches', requireAdmin, bioRoute(() => listBranches()));
+api.post('/admin/branches', requireAdmin, bioRoute((req) => createBranch(req.body)));
+api.patch('/admin/branches/:id', requireAdmin, bioRoute((req) => updateBranch(req.params.id, req.body)));
+api.patch('/admin/branches/:id/active', requireAdmin, bioRoute((req) => setBranchActive(req.params.id, Boolean(req.body.active))));
 
 api.get('/admin/qr.png', requireAdminOrKiosk, async (_req, res) => {
   const gate = licenseGate();

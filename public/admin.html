@@ -235,14 +235,37 @@
 
   <section id="settings" class="panel">
     <div class="settings-grid">
-      <form id="companySettingsForm" class="card">
-        <div class="section-head"><div><h2>Identidad del negocio</h2><span class="muted">Datos que identifican esta instalación de Qubiq Control.</span></div></div>
-        <label>Nombre del negocio<input name="businessName" maxlength="160" required></label>
-        <label>Sucursal<input name="branchName" maxlength="160" required></label>
-        <label>Administrador<input name="adminName" maxlength="120" required></label>
-        <label>Correo del administrador<input name="adminEmail" type="email" maxlength="160"></label>
-        <button class="btn">Guardar identidad</button><div id="companySettingsMsg" class="message"></div>
-      </form>
+      <div class="settings-stack">
+        <form id="companySettingsForm" class="card">
+          <div class="section-head"><div><h2>Identidad del negocio</h2><span class="muted">Datos que identifican esta instalación de Qubiq Control.</span></div></div>
+          <label>Nombre del negocio<input name="businessName" maxlength="160" required></label>
+          <label>Sucursal<input name="branchName" maxlength="160" required></label>
+          <label>Administrador<input name="adminName" maxlength="120" required></label>
+          <label>Correo del administrador<input name="adminEmail" type="email" maxlength="160"></label>
+          <button class="btn">Guardar identidad</button><div id="companySettingsMsg" class="message"></div>
+        </form>
+        <div class="card" id="branchesCard">
+          <div class="section-head"><div><h2>Sucursales</h2><span class="muted">Los locales del negocio. Es la base para llevar la asistencia de varias sucursales en un solo sistema.</span></div></div>
+          <div class="table-wrap">
+            <table class="bio-table">
+              <thead><tr><th>Código</th><th>Nombre</th><th>Estado</th><th>Acciones</th></tr></thead>
+              <tbody id="branchBody"><tr><td colspan="4">Cargando...</td></tr></tbody>
+            </table>
+          </div>
+          <form id="branchForm" class="branch-form" autocomplete="off">
+            <input type="hidden" name="id">
+            <div class="form-row">
+              <label>Nombre<input name="name" maxlength="80" required placeholder="Ej. Sucursal Centro"></label>
+              <label>Código<input name="code" maxlength="6" placeholder="Se sugiere solo"></label>
+            </div>
+            <div class="button-row">
+              <button class="btn" id="branchSubmit">Agregar sucursal</button>
+              <button type="button" id="branchCancel" class="btn secondary hidden">Cancelar</button>
+            </div>
+            <div id="branchMsg" class="message"></div>
+          </form>
+        </div>
+      </div>
       <div class="settings-stack">
         <form id="mailSettingsForm" class="card"><h2>Correo automático de asistencia</h2><p class="muted">Cuenta independiente para enviar confirmaciones automáticas. Las credenciales se guardan cifradas en esta instalación.</p>
           <label>Proveedor<select id="mailProviderSettings"><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="custom">Otro proveedor</option></select></label>

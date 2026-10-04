@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS day_status (
 CREATE INDEX IF NOT EXISTS idx_mail_queue_status ON mail_queue(status, next_attempt_at);
 `);
 
+// Sucursales (modo multisucursal). No se borran: se desactivan.
+db.exec(`
+CREATE TABLE IF NOT EXISTS branches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`);
+
 // Lectores biométricos. Solo se guardan IDs y marcaciones: nunca huellas ni plantillas.
 db.exec(`
 CREATE TABLE IF NOT EXISTS biometric_devices (
