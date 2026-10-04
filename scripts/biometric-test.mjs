@@ -91,6 +91,13 @@ try {
     assert.equal(migrated[0].branchCode, 'SUV');
     assert.equal(migrated[0].serialNumber, 'OLD123', 'El número de serie ya conocido pasa a ser su identidad.');
     assert.equal(branches.listBranches().length, 1);
+    const oldEvent = db.prepare('SELECT * FROM biometric_events').get();
+    assert.equal(oldEvent.branch_id, migrated[0].branchId, 'La marcación de huella vieja queda en la sucursal de su lector.');
+    assert.equal(oldEvent.event_uuid, bio.eventUuid('OLD123', '7', '2026-10-02 08:01:14', 1, 0));
+    assert.equal(oldEvent.source, 'biometric');
+    const oldMarks = db.prepare('SELECT source, branch_id, device_id FROM attendance ORDER BY id').all();
+    assert.deepEqual(oldMarks.map((row) => row.branch_id), [migrated[0].branchId, migrated[0].branchId], 'Todas las marcas viejas quedan en la sucursal que ya había.');
+    assert.deepEqual(oldMarks.map((row) => row.device_id), [migrated[0].id, null], 'La de huella recuerda su lector; la del QR no tiene lector.');
     console.log('BIOMETRIC_MIGRATION_OK');
   } else {
     await license.saveLicenseKey('QBQ-TEST-TEST-TEST-TEST');
@@ -172,6 +179,15 @@ try {
     assert.equal(sync.imported, 1);
     assert.equal(sync.unmapped, 1);
     assert.equal(count('SELECT COUNT(*) AS n FROM attendance'), 0);
+    const firstEvent = db.prepare('SELECT * FROM biometric_events ORDER BY id LIMIT 1').get();
+    assert.match(firstEvent.event_uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(firstEvent.event_uuid, bio.eventUuid('SIM0001', firstEvent.zk_user_id, firstEvent.punched_local, firstEvent.verify_status, firstEvent.punch_state),
+      'El identificador sale del lector, el usuario y la hora: la misma marcación siempre da el mismo.');
+    assert.notEqual(firstEvent.event_uuid, bio.eventUuid('SIM0002', firstEvent.zk_user_id, firstEvent.punched_local, firstEvent.verify_status, firstEvent.punch_state));
+    assert.equal(firstEvent.branch_id, agz.id);
+    assert.equal(firstEvent.source, 'biometric');
+    assert.throws(() => db.prepare(`INSERT INTO biometric_events(device_id, zk_user_id, punched_local, status, received_at, event_uuid)
+      VALUES(?, '99', '2020-01-01 00:00:00', 'INVALID', 'x', ?)`).run(device.id, firstEvent.event_uuid), /UNIQUE/, 'El identificador es único en la base.');
     ok('ID del lector no vinculado: se guarda el evento, no se crea asistencia');
 
     // ----- Vínculos únicos -----
@@ -189,6 +205,9 @@ try {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].event_type, 'ENTRY');
     assert.equal(rows[0].source, 'BIO');
+    const firstMark = db.prepare('SELECT branch_id, device_id FROM attendance WHERE employee_id = ? ORDER BY id LIMIT 1').get(ana);
+    assert.equal(firstMark.branch_id, agz.id, 'La marcación guarda la sucursal del lector.');
+    assert.equal(firstMark.device_id, device.id);
     assert.ok(['ON_TIME', 'LATE'].includes(rows[0].status));
     ok('empleado existente: la huella genera la ENTRADA con las reglas de horario');
 
@@ -467,7 +486,36 @@ try {
     const crossEvent = bio.listEvents({ deviceId: second.id })[0];
     assert.equal(crossEvent.employee, 'Ana Prueba');
     assert.equal(crossEvent.branchCode, 'VEN');
+    // Prueba piloto: entrada en una sucursal y salida en otra, el mismo día y la misma persona.
+    const hugo = person('EMP021', 'Hugo Prueba', '212221222');
+    bio.setMapping({ employeeId: hugo, deviceId: device.id, zkUserId: '21' });
+    bio.setMapping({ employeeId: hugo, deviceId: second.id, zkUserId: '21' });
+    fake.punch('21', ago(300));
+    old.punch('21', ago(4));
+    assert.equal((await bio.syncDevice(device.id, { manual: true })).applied, 1);
+    assert.equal((await bio.syncDevice(second.id, { manual: true })).applied, 1);
+    const hugoRows = db.prepare('SELECT event_type, branch_id, device_id, work_date FROM attendance WHERE employee_id = ? ORDER BY occurred_at').all(hugo);
+    assert.deepEqual(hugoRows.map((row) => [row.event_type, row.branch_id, row.device_id]),
+      [['ENTRY', agz.id, device.id], ['EXIT', ven.id, second.id]]);
+    const hugoDay = attendance.payrollRows(hugoRows[0].work_date, hugoRows[0].work_date).find((row) => row.codigo === 'EMP021');
+    assert.equal(hugoDay.sucursalEntrada, 'AGZ');
+    assert.equal(hugoDay.sucursalSalida, 'VEN');
+    assert.equal(hugoDay.horasTrabajadas, attendance.countedHours(hugoDay.entrada, hugoDay.salida));
+    const pital = branches.createBranch({ name: 'Pital' });
+    const all = attendance.dailyOverview(hugoRows[0].work_date);
+    assert.equal(all.branches.length, 3);
+    const hugoAll = all.rows.find((row) => row.employee_code === 'EMP021');
+    assert.equal(hugoAll.entryBranch, 'AGZ');
+    assert.equal(hugoAll.exitBranch, 'VEN');
+    for (const branchId of [agz.id, ven.id]) {
+      assert.ok(attendance.dailyOverview(hugoRows[0].work_date, { branchId }).rows.some((row) => row.employee_code === 'EMP021'),
+        'Quien marcó entrada o salida en una sucursal aparece al filtrar por ella.');
+    }
+    assert.equal(attendance.dailyOverview(hugoRows[0].work_date, { branchId: pital.id }).rows.length, 0);
+    assert.equal(count('SELECT COUNT(*) AS n FROM attendance WHERE branch_id IS NULL'), 0, 'Ninguna marcación queda sin sucursal.');
+    assert.equal(count('SELECT COUNT(*) AS n FROM biometric_events WHERE event_uuid IS NULL OR branch_id IS NULL'), 0);
     await old.stop();
+    ok('entrada en una sucursal y salida en otra: un solo empleado, cada marca con su sucursal');
     ok('varios lectores: cada uno en su sucursal, mismo ID por empleado, formato de usuario detectado solo');
 
     // ----- API: solo con sesión de administrador -----
@@ -543,12 +591,32 @@ try {
         info_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(ip, port));
       INSERT INTO biometric_devices(name, ip, port, import_since, info_json, created_at, updated_at)
         VALUES('Lector Antiguo', '192.168.1.202', 4370, '2026-10-01T06:00:00.000Z', '{"serial":"OLD123"}',
-               '2026-10-01T06:00:00.000Z', '2026-10-01T06:00:00.000Z');`);
+               '2026-10-01T06:00:00.000Z', '2026-10-01T06:00:00.000Z');
+      CREATE TABLE employees (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+        position TEXT NOT NULL DEFAULT '', pin_hash TEXT NOT NULL, schedule_id INTEGER, active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL);
+      INSERT INTO employees(employee_code, name, pin_hash, created_at) VALUES('EMP007', 'Persona Vieja', 'x:y', '2026-10-01T06:00:00.000Z');
+      CREATE TABLE attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN ('ENTRY','EXIT')), occurred_at TEXT NOT NULL, local_time TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'OK', minutes_delta INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'QR',
+        qr_nonce TEXT, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        FOREIGN KEY(employee_id) REFERENCES employees(id), UNIQUE(employee_id, work_date, event_type));
+      INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time, source, created_at)
+        VALUES(1, '2026-10-02', 'ENTRY', '2026-10-02T14:01:14.000Z', '08:01:14', 'BIO', '2026-10-02T14:01:20.000Z'),
+              (1, '2026-10-02', 'EXIT', '2026-10-02T23:00:00.000Z', '17:00:00', 'QR', '2026-10-02T23:00:00.000Z');
+      CREATE TABLE biometric_events (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id INTEGER NOT NULL, zk_user_id TEXT NOT NULL,
+        punched_local TEXT NOT NULL, occurred_at TEXT, verify_status INTEGER NOT NULL DEFAULT 0, punch_state INTEGER NOT NULL DEFAULT 0,
+        employee_id INTEGER, attendance_id INTEGER,
+        status TEXT NOT NULL CHECK(status IN ('APPLIED','UNMAPPED','REJECTED','IGNORED','INVALID')), note TEXT NOT NULL DEFAULT '',
+        received_at TEXT NOT NULL, processed_at TEXT, FOREIGN KEY(device_id) REFERENCES biometric_devices(id),
+        UNIQUE(device_id, zk_user_id, punched_local, verify_status, punch_state));
+      INSERT INTO biometric_events(device_id, zk_user_id, punched_local, occurred_at, verify_status, employee_id, attendance_id, status, received_at)
+        VALUES(1, '7', '2026-10-02 08:01:14', '2026-10-02T14:01:14.000Z', 1, 1, 1, 'APPLIED', '2026-10-02T14:01:20.000Z');`);
     oldDb.close();
     const migration = spawnSync(process.execPath, [self, '--migration', oldDir], { encoding: 'utf8', timeout: 30000 });
     try { rmSync(oldDir, { recursive: true, force: true }); } catch { /* limpieza no crítica */ }
     assert.match(migration.stdout, /BIOMETRIC_MIGRATION_OK/, migration.stderr);
-    ok('actualización: el lector que ya existía queda en la sucursal que ya había, con su número de serie');
+    ok('actualización: lector y marcaciones que ya existían quedan en la sucursal que ya había');
 
     console.log(`BIOMETRIC_TEST_OK ${passed} grupos de pruebas`);
   }

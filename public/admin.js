@@ -98,6 +98,8 @@ function statusBadge(row) {
 }
 
 let appStatus = null;
+let multiBranch = false;
+const branchTag = (code) => (multiBranch && code ? ` <code class="branch-tag">${esc(code)}</code>` : '');
 let currentSystem = null;
 let lastQrBlocked = null;
 let cachedEmployees = [];
@@ -147,8 +149,18 @@ async function reloadAdminData() {
 
 async function loadOverview() {
   const selected = $('#overviewDate')?.value || appStatus?.today || '';
-  const query = selected ? `?date=${encodeURIComponent(selected)}` : '';
-  const data = await api(`/api/admin/overview${query}`);
+  const params = new URLSearchParams();
+  if (selected) params.set('date', selected);
+  if ($('#overviewBranch').value) params.set('branchId', $('#overviewBranch').value);
+  const data = await api(`/api/admin/overview?${params}`);
+  // Con una sola sucursal la pantalla queda igual que siempre; con varias aparecen el filtro y el código de cada marca.
+  multiBranch = (data.branches || []).length > 1;
+  const branchSelect = $('#overviewBranch');
+  const chosen = branchSelect.value;
+  branchSelect.innerHTML = '<option value="">Todas las sucursales</option>'
+    + (data.branches || []).map((branch) => `<option value="${branch.id}">${esc(branch.name)}</option>`).join('');
+  branchSelect.value = (data.branches || []).some((branch) => String(branch.id) === chosen) ? chosen : '';
+  branchSelect.classList.toggle('hidden', !multiBranch);
   $('#today').textContent = data.date;
   $('#sEmployees').textContent = data.totals.employees;
   $('#sPresent').textContent = data.totals.present;
@@ -157,8 +169,8 @@ async function loadOverview() {
   $('#attendanceBody').innerHTML = data.rows.map((row) => `
     <tr>
       <td><strong>${esc(row.name)}</strong><br><small class="muted">${esc(row.employee_code)}</small></td>
-      <td>${row.entry || '—'}</td>
-      <td>${row.exit || '—'}</td>
+      <td>${row.entry || '—'}${branchTag(row.entry && row.entryBranch)}</td>
+      <td>${row.exit || '—'}${branchTag(row.exit && row.exitBranch)}</td>
       <td>${statusBadge(row)}</td>
       <td>${row.exit ? formatHours(row.workedMinutes) : '—'}${row.exit && row.extraMinutes > 0 ? ` <span class="badge warn">${formatHours(row.extraMinutes)} extra</span>` : ''}</td>
       <td><button type="button" class="mini-btn correct-day" data-employee="${row.id}" data-name="${esc(row.name)}" data-date="${row.workDate}" data-entry="${row.entry || ''}" data-exit="${row.exit || ''}">Corregir</button></td>
@@ -441,6 +453,7 @@ $('#logout').onclick = async () => {
 };
 
 $('#refresh').onclick = () => loadOverview().catch((error) => alert(error.message));
+$('#overviewBranch').onchange = () => loadOverview().catch((error) => toast(error.message, false));
 $('#reloadEmployees').onclick = () => loadEmployees().catch((error) => toast(error.message, false));
 $('#employeeSearch').oninput = () => {
   const query = $('#employeeSearch').value.trim().toLowerCase();
@@ -666,8 +679,8 @@ async function loadPayroll() {
         <td>${row.fecha}</td>
         <td>${esc(row.codigo)}</td>
         <td>${esc(row.empleado)}</td>
-        <td>${row.entrada || '—'}</td>
-        <td>${row.salida || (row.fecha < appStatus.today ? '<span class="badge bad">Sin salida</span>' : '—')}</td>
+        <td>${row.entrada || '—'}${branchTag(row.entrada && row.sucursalEntrada)}</td>
+        <td>${row.salida || (row.fecha < appStatus.today ? '<span class="badge bad">Sin salida</span>' : '—')}${branchTag(row.salida && row.sucursalSalida)}</td>
         <td>${formatLateTime(row.tardanzaMin)}</td>
         <td>${formatCountedHours(row.horasTrabajadas)}</td>
         <td>${Number(row.horasExtra) > 0 ? `<span class="badge warn">${formatCountedHours(row.horasExtra)}</span>` : '—'}</td>

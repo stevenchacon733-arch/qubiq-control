@@ -223,6 +223,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_bio_devices_serial ON biometric_devices(se
 CREATE INDEX IF NOT EXISTS idx_bio_devices_branch ON biometric_devices(branch_id);
 `);
 
+// Fase 3 multisucursal: cada marcación guarda en qué sucursal y con qué lector se hizo, y cada marcación de
+// huella lleva un identificador único (event_uuid) que es el mismo sin importar cuántas veces se envíe.
+const eventColumns = db.prepare('PRAGMA table_info(biometric_events)').all().map(row => row.name);
+if (!eventColumns.includes('event_uuid')) db.exec('ALTER TABLE biometric_events ADD COLUMN event_uuid TEXT');
+if (!eventColumns.includes('branch_id')) db.exec('ALTER TABLE biometric_events ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+if (!eventColumns.includes('source')) db.exec("ALTER TABLE biometric_events ADD COLUMN source TEXT NOT NULL DEFAULT 'biometric'");
+const attendanceColumns = db.prepare('PRAGMA table_info(attendance)').all().map(row => row.name);
+if (!attendanceColumns.includes('branch_id')) db.exec('ALTER TABLE attendance ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+if (!attendanceColumns.includes('device_id')) db.exec('ALTER TABLE attendance ADD COLUMN device_id INTEGER REFERENCES biometric_devices(id)');
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bio_events_uuid ON biometric_events(event_uuid) WHERE event_uuid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bio_events_no_uuid ON biometric_events(device_id) WHERE event_uuid IS NULL;
+CREATE INDEX IF NOT EXISTS idx_bio_events_no_branch ON biometric_events(device_id) WHERE branch_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_attendance_no_branch ON attendance(id) WHERE branch_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_attendance_branch ON attendance(branch_id, work_date);
+`);
+
 export const getSetting = (key) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
 export const setSetting = (key, value) => db.prepare(`
   INSERT INTO settings(key, value) VALUES(?, ?)

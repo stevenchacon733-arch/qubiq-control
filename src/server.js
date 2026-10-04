@@ -218,7 +218,7 @@ api.get('/auth/me', (req, res) => {
   if (!role) return res.status(401).json({ error: 'Sesión requerida.' });
   res.json({ authenticated: true, role });
 });
-api.get('/admin/overview', requireAdmin, (req, res) => res.json(dailyOverview(req.query.date || localDate())));
+api.get('/admin/overview', requireAdmin, (req, res) => res.json(dailyOverview(req.query.date || localDate(), { branchId: req.query.branchId || null })));
 api.get('/admin/system', requireAdmin, (_req, res) => res.json({
   mailConfigured: isMailConfigured(),
   googleSheetsConfigured: isGoogleSheetsConfigured(),
@@ -375,9 +375,9 @@ api.get('/admin/payroll.csv', requireAdmin, (req, res) => {
   const from = String(req.query.from || localDate());
   const to = String(req.query.to || from);
   const rows = payrollRows(from, to);
-  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas','Horas ordinarias','Horas extra'];
+  const headers = ['Fecha','Código','Cédula','Empleado','Puesto','Entrada','Salida','Estado entrada','Tardanza (min)','Horas trabajadas','Horas ordinarias','Horas extra','Sucursal entrada','Sucursal salida'];
   const esc = (v) => `"${String(v ?? '').replaceAll('"', '""')}"`;
-  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas,r.horasOrdinarias,r.horasExtra])]
+  const csv = [headers, ...rows.map(r => [r.fecha,r.codigo,r.cedula,r.empleado,r.puesto,r.entrada,r.salida,r.estadoEntrada,r.tardanzaMin,r.horasTrabajadas,r.horasOrdinarias,r.horasExtra,r.sucursalEntrada,r.sucursalSalida])]
     .map(row => row.map(esc).join(',')).join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="qubiq-planilla-${from}-${to}.csv"`);

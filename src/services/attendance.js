@@ -1,5 +1,6 @@
 import { db, audit } from '../db.js';
 import { hashSecret, verifySecret } from '../security.js';
+import { ensureDefaultBranch } from './branches.js';
 import { addDays, localDate, localMinutes, localTime, minutesBetween, minutesFromClock, nowIso, roundedClockHour, zonedToDate } from '../time.js';
 
 function scheduleMinutes(startTime, endTime) {
@@ -193,7 +194,7 @@ export function activeEmployeeById(id) {
 
 // Motor único de asistencia: decide entrada o salida, tardanza y jornada. El QR ('QR'), la computadora del
 // negocio ('APP') y el lector de huella ('BIO') solo cambian cómo llega la marcación y a qué hora ocurrió.
-export function registerAttendance(employee, { at = new Date(), source = 'QR', nonce = null, minGapSeconds = 0 } = {}) {
+export function registerAttendance(employee, { at = new Date(), source = 'QR', nonce = null, minGapSeconds = 0, branchId = null, deviceId = null } = {}) {
   if (!ENGINE_SOURCES.has(source)) throw new Error('Origen de marcación inválido.');
   if (!employee.schedule_id) throw new Error('Este empleado no tiene un horario asignado.');
 
@@ -233,12 +234,15 @@ export function registerAttendance(employee, { at = new Date(), source = 'QR', n
     ({ status, delta } = entryLateness(employee, now));
   }
 
+  // Sucursal de la marcación: la del lector que la tomó. El QR y la computadora del negocio son de la sucursal
+  // de esta instalación. Entrada y salida pueden ser de sucursales distintas.
+  const branch = branchId ?? ensureDefaultBranch();
   const inserted = db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time,
-                                     status, minutes_delta, source, qr_nonce, created_at)
-                              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, source, nonce, nowIso());
+                                     status, minutes_delta, source, qr_nonce, branch_id, device_id, created_at)
+                              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(employee.id, date, eventType, now.toISOString(), localTime(now), status, delta, source, nonce, branch, deviceId, nowIso());
 
-  audit(`EMPLOYEE:${employee.employee_code}`, 'MARK', 'ATTENDANCE', employee.id, { date, eventType, status, delta, source });
+  audit(`EMPLOYEE:${employee.employee_code}`, 'MARK', 'ATTENDANCE', employee.id, { date, eventType, status, delta, source, branchId: branch });
   return { employee: employee.name, employeeId: employee.id, employeeCode: employee.employee_code,
     eventType, time: localTime(now).slice(0, 5), status, lateMinutes: delta,
     notificationEmail: employee.email || '', date, attendanceId: Number(inserted.lastInsertRowid) };
@@ -299,8 +303,8 @@ export function correctAttendanceDay({ employeeId, workDate, entry = '', exit = 
           note = 'Corregida por el administrador' WHERE id = ?`).run(at.toISOString(), `${clock}:00`, status, delta, row.id);
     } else {
       db.prepare(`INSERT INTO attendance(employee_id, work_date, event_type, occurred_at, local_time, status,
-          minutes_delta, source, note, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'ADMIN', 'Corregida por el administrador', ?)`)
-        .run(employee.id, date, type, at.toISOString(), `${clock}:00`, status, delta, nowIso());
+          minutes_delta, source, note, branch_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'ADMIN', 'Corregida por el administrador', ?, ?)`)
+        .run(employee.id, date, type, at.toISOString(), `${clock}:00`, status, delta, ensureDefaultBranch(), nowIso());
     }
   };
 
@@ -319,21 +323,24 @@ export function correctAttendanceDay({ employeeId, workDate, entry = '', exit = 
   }
 }
 
-export function dailyOverview(date = localDate()) {
+const ATTENDANCE_WITH_BRANCH = `SELECT a.*, b.code AS branch_code FROM attendance a LEFT JOIN branches b ON b.id = a.branch_id
+                                WHERE a.employee_id = ? AND a.work_date = ? ORDER BY a.occurred_at`;
+
+// branchId: solo las personas que marcaron entrada o salida en esa sucursal ese día.
+export function dailyOverview(date = localDate(), { branchId = null } = {}) {
   const employees = db.prepare(`SELECT e.id, e.employee_code, e.name, e.position, e.active,
                                        s.start_time, s.end_time, s.work_days
                                 FROM employees e LEFT JOIN schedules s ON s.id = e.schedule_id
                                 WHERE e.active = 1 AND COALESCE(e.archived, 0) = 0 ORDER BY e.name`).all();
   const rows = employees.map(emp => {
-    let events = db.prepare(`SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? ORDER BY occurred_at`).all(emp.id, date);
+    let events = db.prepare(ATTENDANCE_WITH_BRANCH).all(emp.id, date);
     const overnight = emp.start_time && emp.end_time && minutesFromClock(emp.end_time) <= minutesFromClock(emp.start_time);
     if (!events.length && date === localDate() && overnight) {
       const cutoff = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString();
       const recent = db.prepare(`SELECT work_date FROM attendance WHERE employee_id = ? AND occurred_at >= ?
                                  ORDER BY occurred_at DESC LIMIT 1`).get(emp.id, cutoff);
       if (recent?.work_date) {
-        events = db.prepare(`SELECT * FROM attendance WHERE employee_id = ? AND work_date = ? ORDER BY occurred_at`)
-          .all(emp.id, recent.work_date);
+        events = db.prepare(ATTENDANCE_WITH_BRANCH).all(emp.id, recent.work_date);
       }
     }
     const entry = events.find(x => x.event_type === 'ENTRY');
@@ -344,6 +351,9 @@ export function dailyOverview(date = localDate()) {
       workDate: events[0]?.work_date || date,
       entry: entry?.local_time?.slice(0,5) || null,
       exit: exit?.local_time?.slice(0,5) || null,
+      entryBranch: entry?.branch_code || '',
+      exitBranch: exit?.branch_code || '',
+      branchIds: events.map(x => x.branch_id).filter(Boolean),
       attendanceStatus: entry ? entry.status : 'ABSENT_OR_PENDING',
       lateMinutes: entry?.minutes_delta || 0,
       workedMinutes: worked.total,
@@ -351,15 +361,19 @@ export function dailyOverview(date = localDate()) {
     };
   });
 
+  const wanted = branchId ? Number(branchId) : null;
+  const shown = (wanted ? rows.filter(r => r.branchIds.includes(wanted)) : rows).map(({ branchIds, ...row }) => row);
   return {
     date,
+    branchId: wanted,
+    branches: db.prepare('SELECT id, name, code FROM branches WHERE active = 1 ORDER BY name COLLATE NOCASE').all(),
     totals: {
-      employees: rows.length,
-      present: rows.filter(r => r.entry).length,
-      late: rows.filter(r => r.attendanceStatus === 'LATE').length,
-      completed: rows.filter(r => r.exit).length
+      employees: shown.length,
+      present: shown.filter(r => r.entry).length,
+      late: shown.filter(r => r.attendanceStatus === 'LATE').length,
+      completed: shown.filter(r => r.exit).length
     },
-    rows
+    rows: shown
   };
 }
 
@@ -387,8 +401,11 @@ export function payrollRows(from, to) {
                             MAX(CASE WHEN a.event_type='ENTRY' THEN a.minutes_delta ELSE 0 END) AS late_minutes,
                             MIN(CASE WHEN a.event_type='ENTRY' THEN a.occurred_at END) AS entry_iso,
                             MAX(CASE WHEN a.event_type='EXIT' THEN a.occurred_at END) AS exit_iso,
+                            MAX(CASE WHEN a.event_type='ENTRY' THEN b.code END) AS entry_branch,
+                            MAX(CASE WHEN a.event_type='EXIT' THEN b.code END) AS exit_branch,
                             s.start_time, s.end_time
                      FROM attendance a JOIN employees e ON e.id = a.employee_id
+                     LEFT JOIN branches b ON b.id = a.branch_id
                      LEFT JOIN schedules s ON s.id = e.schedule_id
                      WHERE a.work_date BETWEEN ? AND ?
                      GROUP BY a.work_date, e.id
@@ -404,6 +421,8 @@ export function payrollRows(from, to) {
     puesto: row.position,
     entrada: row.entry_time?.slice(0,5) || '',
     salida: row.exit_time?.slice(0,5) || '',
+    sucursalEntrada: row.entry_branch || '',
+    sucursalSalida: row.exit_branch || '',
     estadoEntrada: row.entry_status || '',
     tardanzaMin: row.late_minutes || 0,
     horasTrabajadas: worked ? worked.total / 60 : '',

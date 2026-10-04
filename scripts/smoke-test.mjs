@@ -460,6 +460,17 @@ try {
   const corrections = db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'CORRECT' AND entity_type = 'ATTENDANCE'").get().n;
   assert.equal(corrections, 5, 'Cada corrección queda en la bitácora.');
 
+  // ----- Cada marcación guarda su sucursal (las del QR y la computadora, la de esta instalación) -----
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM attendance WHERE branch_id IS NULL').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(DISTINCT branch_id) AS n FROM attendance').get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM attendance WHERE branch_id = ?').get(firstBranchId).n > 0, true);
+  result = await request(`/api/admin/payroll.csv?from=${today}&to=${today}`);
+  assert.match(Buffer.from(result.body).toString('utf8'), /"Sucursal entrada","Sucursal salida"/);
+  result = await request(`/api/admin/overview?date=${today}&branchId=${firstBranchId}`);
+  assert.equal(result.response.status, 200);
+  assert.ok(result.body.rows.length > 0);
+  assert.ok(result.body.branches.length >= 1);
+
   const integrity = db.prepare('PRAGMA integrity_check').get();
   assert.equal(integrity.integrity_check, 'ok');
   result = await request('/api/auth/logout', { method: 'POST' });

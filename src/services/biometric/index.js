@@ -1,5 +1,6 @@
 // Lectores de huella: configuración, vínculo con empleados, sincronización y registro técnico.
 // Las marcaciones entran al mismo motor de asistencia que usa el QR (registerAttendance).
+import { createHash } from 'node:crypto';
 import { db, audit } from '../../db.js';
 import { openJson, sealJson } from '../../security.js';
 import { localDate, nowIso, zonedToDate } from '../../time.js';
@@ -75,6 +76,36 @@ function checkSerial(row, serial) {
   db.prepare('UPDATE biometric_devices SET serial_number = ? WHERE id = ?').run(found, row.id);
 }
 
+// Identificador único de una marcación de huella. Se calcula con el número de serie del lector, el ID del usuario
+// y la hora de la marcación, no al azar: si la misma marcación se lee o se envía otra vez (reintento sin
+// internet, agente reinstalado), da el mismo valor y el central no la registra dos veces.
+export function eventUuid(serial, zkUserId, punchedLocal, verifyStatus = 0, punchState = 0) {
+  const hash = createHash('sha1')
+    .update(`qubiq-control/marcacion/v1|${serial}|${zkUserId}|${punchedLocal}|${Number(verifyStatus) || 0}|${Number(punchState) || 0}`)
+    .digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// Completa lo que traían las versiones anteriores: sucursal y lector de cada marcación, e identificador único de
+// las marcaciones de huella. Los índices parciales hacen que, cuando no queda nada por completar, no cueste nada.
+function adoptMarks(defaultBranchId) {
+  db.exec(`UPDATE biometric_events SET branch_id = (SELECT d.branch_id FROM biometric_devices d WHERE d.id = biometric_events.device_id)
+           WHERE branch_id IS NULL AND EXISTS (SELECT 1 FROM biometric_devices d WHERE d.id = biometric_events.device_id AND d.branch_id IS NOT NULL)`);
+  const pending = db.prepare(`SELECT b.id, b.zk_user_id, b.punched_local, b.verify_status, b.punch_state, d.serial_number
+      FROM biometric_events b JOIN biometric_devices d ON d.id = b.device_id
+      WHERE b.event_uuid IS NULL AND d.serial_number <> '' LIMIT 5000`).all();
+  const setUuid = db.prepare('UPDATE OR IGNORE biometric_events SET event_uuid = ? WHERE id = ?');
+  for (const row of pending) setUuid.run(eventUuid(row.serial_number, row.zk_user_id, row.punched_local, row.verify_status, row.punch_state), row.id);
+  db.exec(`UPDATE attendance SET
+             device_id = (SELECT b.device_id FROM biometric_events b WHERE b.attendance_id = attendance.id),
+             branch_id = (SELECT b.branch_id FROM biometric_events b WHERE b.attendance_id = attendance.id)
+           WHERE branch_id IS NULL AND EXISTS (SELECT 1 FROM biometric_events b WHERE b.attendance_id = attendance.id AND b.branch_id IS NOT NULL)`);
+  if (defaultBranchId) db.prepare('UPDATE attendance SET branch_id = ? WHERE branch_id IS NULL').run(defaultBranchId);
+}
+
 // Las instalaciones que venían de una sola sucursal: sus lectores quedan en la primera sucursal, y el número de
 // serie que ya se conocía por el diagnóstico pasa a ser su identidad.
 function adoptDevices() {
@@ -87,6 +118,7 @@ function adoptDevices() {
     try { db.prepare('UPDATE biometric_devices SET serial_number = ? WHERE id = ?').run(serial, row.id); }
     catch { /* otro lector ya tiene ese número: se resuelve cuando responda */ }
   }
+  adoptMarks(branchId);
 }
 
 function driverFor(row) {
@@ -361,7 +393,8 @@ function decide(event, device) {
   const employee = activeEmployeeById(mapping.employee_id);
   if (!employee) return { status: 'REJECTED', note: 'Empleado inactivo o eliminado.', occurred, employeeId: mapping.employee_id };
   try {
-    const result = registerAttendance(employee, { at: occurred, source: 'BIO', minGapSeconds: device.min_gap_seconds });
+    const result = registerAttendance(employee, { at: occurred, source: 'BIO', minGapSeconds: device.min_gap_seconds,
+      branchId: device.branch_id ?? null, deviceId: device.id });
     return { status: 'APPLIED', note: result.eventType === 'ENTRY' ? 'Entrada' : 'Salida', occurred, employeeId: employee.id, result };
   } catch (error) {
     const unique = String(error.message).includes('UNIQUE');
@@ -411,7 +444,8 @@ export function ingestEvents(deviceId, events, { full = false } = {}) {
     : null;
   const ordered = [...events].sort((a, b) => String(a.localStamp || '').localeCompare(String(b.localStamp || '')));
   const insert = db.prepare(`INSERT INTO biometric_events(device_id, zk_user_id, punched_local, verify_status, punch_state,
-      status, note, received_at) VALUES(?, ?, ?, ?, ?, 'INVALID', '', ?) ON CONFLICT DO NOTHING`);
+      status, note, received_at, event_uuid, branch_id, source) VALUES(?, ?, ?, ?, ?, 'INVALID', '', ?, ?, ?, 'biometric')
+      ON CONFLICT DO NOTHING`);
   let newest = device.last_event_local || '';
 
   for (const event of ordered) {
@@ -419,7 +453,10 @@ export function ingestEvents(deviceId, events, { full = false } = {}) {
     const local = event.valid && event.localStamp ? event.localStamp : rawStamp(event.time);
     if (event.valid && watermark && local < watermark) { summary.duplicates += 1; continue; }
     const decision = transaction(() => {
-      const inserted = insert.run(device.id, userId, local, Number(event.verifyStatus) || 0, Number(event.punchState) || 0, nowIso());
+      const verify = Number(event.verifyStatus) || 0;
+      const punch = Number(event.punchState) || 0;
+      const uuid = device.serial_number ? eventUuid(device.serial_number, userId, local, verify, punch) : null;
+      const inserted = insert.run(device.id, userId, local, verify, punch, nowIso(), uuid, device.branch_id ?? null);
       if (!inserted.changes) return null;
       const outcome = event.valid
         ? decide({ zk_user_id: userId, punched_local: local }, device)
@@ -602,10 +639,10 @@ export function listLogs({ deviceId = null, limit = 100 } = {}) {
 
 export function listEvents({ deviceId = null, limit = 100 } = {}) {
   const max = Math.min(500, Math.max(1, Number(limit) || 100));
-  const sql = `SELECT b.id, b.device_id AS deviceId, d.name AS deviceName, br.code AS branchCode, br.name AS branchName,
+  const sql = `SELECT b.id, b.event_uuid AS eventUuid, b.device_id AS deviceId, d.name AS deviceName, br.code AS branchCode, br.name AS branchName,
       b.zk_user_id AS zkUserId, b.punched_local AS punchedLocal, b.status, b.note, e.name AS employee
     FROM biometric_events b JOIN biometric_devices d ON d.id = b.device_id
-    LEFT JOIN branches br ON br.id = d.branch_id
+    LEFT JOIN branches br ON br.id = COALESCE(b.branch_id, d.branch_id)
     LEFT JOIN employees e ON e.id = b.employee_id`;
   return deviceId
     ? db.prepare(`${sql} WHERE b.device_id = ? ORDER BY b.id DESC LIMIT ?`).all(Number(deviceId), max)

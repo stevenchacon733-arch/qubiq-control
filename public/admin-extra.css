@@ -86,3 +86,5 @@
 .branch-form{margin-top:14px}
 .branch-form .button-row{margin:2px 0 0}
 .branch-actions{display:flex;gap:6px;flex-wrap:wrap}
+.branch-tag{padding:2px 6px;border-radius:6px;background:var(--green-soft);color:var(--green-hover);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em}
+.button-row.compact select{width:auto;min-width:180px}
