@@ -7,7 +7,8 @@ const MAGIC = Buffer.from([0x50, 0x50, 0x82, 0x7d]);
 const SESSION = 0x1a2b;
 
 export class FakeZkDevice {
-  constructor({ commKey = 0, userPacketSize = 72, inlineSmall = false } = {}) {
+  constructor({ commKey = 0, userPacketSize = 72, inlineSmall = false, serial = 'SIM0001' } = {}) {
+    this.serial = serial;
     this.commKey = commKey;
     this.userPacketSize = userPacketSize;
     this.inlineSmall = inlineSmall;
@@ -138,7 +139,7 @@ export class FakeZkDevice {
       }
       case CMD.OPTIONS_RRQ: {
         const key = data.toString('latin1').replace(/\0/g, '');
-        const values = { '~SerialNumber': 'SIM0001', '~DeviceName': 'SimTerminal', '~Platform': 'ZEM-SIM', MAC: '00:17:61:00:00:01' };
+        const values = { '~SerialNumber': this.serial, '~DeviceName': 'SimTerminal', '~Platform': 'ZEM-SIM', MAC: '00:17:61:00:00:01' };
         return ok(Buffer.from(`${key}=${values[key] ?? ''}\0`, 'latin1'));
       }
       case CMD.GET_VERSION: return ok(Buffer.from('Ver 6.60 Sim\0', 'latin1'));

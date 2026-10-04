@@ -27,6 +27,9 @@ async function withSession(device, work) {
   }
 }
 
+// El número de serie identifica al aparato aunque le cambien la IP.
+const readSerial = (session) => session.option('~SerialNumber').catch(() => '');
+
 async function readInfo(session) {
   const info = { latencyMs: session.connectMs };
   const safe = async (key, read) => { try { info[key] = await read(); } catch (error) { if (error.code !== 'TIMEOUT') throw error; } };
@@ -48,6 +51,7 @@ export const zktecoDriver = {
   // Comprueba que el puerto responde y que la sesión se autentica.
   testConnection: (device) => withSession(device, async (session) => ({
     latencyMs: session.connectMs,
+    serial: await readSerial(session),
     sizes: await session.sizes()
   })),
 
@@ -56,14 +60,19 @@ export const zktecoDriver = {
   // Cuenta rápida para saber si hay marcaciones nuevas sin descargar todo el registro.
   peek: (device) => withSession(device, async (session) => ({
     latencyMs: session.connectMs,
+    serial: await readSerial(session),
     sizes: await session.sizes()
   })),
 
   // Descarga las marcaciones. Nunca borra nada del dispositivo.
   readAttendance: (device) => withSession(device, async (session) => {
+    const serial = await readSerial(session);
+    // Si el lector que responde no es el registrado, no se le leen las marcaciones.
+    device.verifySerial?.(serial);
     const { sizes, records } = await session.attendance();
     return {
       latencyMs: session.connectMs,
+      serial,
       sizes,
       events: records.map((record) => ({
         userId: record.userId,
@@ -81,6 +90,7 @@ export const zktecoDriver = {
   // Crea el usuario (ID + nombre) si no existe y pide la huella en el propio lector.
   enrollUser: (device, { userId, name, waitMs = 60000, replace = false }) => withSession(device, async (session) => {
     if (!/^\d{1,9}$/.test(String(userId))) throw new ZkError('El ID biométrico debe ser numérico.', 'BAD_ID');
+    device.verifySerial?.(await readSerial(session));
     let users = await session.users();
     let existing = users.find((user) => user.userId === String(userId));
     let created = false;

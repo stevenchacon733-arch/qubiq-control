@@ -17,7 +17,7 @@ const EVENT_LABELS = {
 };
 const REFRESH_MS = 5000;
 
-export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, businessName, reloadEmployees }) {
+export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEmployees }) {
   let devices = [];
   let busy = false;
   let loaded = false;
@@ -76,7 +76,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
     const disabled = off ? 'disabled' : '';
     return `<article class="bio-device ${off ? 'off' : ''}" data-id="${device.id}">
       <div class="bio-device-head">
-        <div><h3>${esc(device.name)}</h3><span class="muted">${esc(device.ip)}:${device.port}${device.location ? ` · ${esc(device.location)}` : ''}</span></div>
+        <div><h3>${esc(device.name)}</h3><span class="muted">${device.branchName ? `${esc(device.branchName)} (${esc(device.branchCode)}) · ` : ''}${esc(device.ip)}:${device.port}${device.location ? ` · ${esc(device.location)}` : ''}${device.serialNumber ? ` · Serie ${esc(device.serialNumber)}` : ''}</span></div>
         <span class="bio-state ${tone}"><span class="status-dot ${tone}"></span>${label}</span>
       </div>
       <div class="bio-facts">
@@ -111,7 +111,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
     renderDevices();
     const select = $('#bioMapDevice');
     const current = select.value;
-    select.innerHTML = devices.map((device) => `<option value="${device.id}">${esc(device.name)}</option>`).join('');
+    select.innerHTML = devices.map((device) => `<option value="${device.id}">${esc(device.name)}${device.branchCode ? ` · ${esc(device.branchCode)}` : ''}</option>`).join('');
     if (devices.some((device) => String(device.id) === current)) select.value = current;
     select.classList.toggle('hidden', devices.length < 2);
   }
@@ -157,13 +157,36 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
     clearMsg($('#bioDeviceMsg'));
   }
 
-  function openDeviceModal(device = null) {
+  // Nombre sugerido para un lector nuevo: ZK-<código de sucursal>-<número>, por ejemplo ZK-AGZ-01.
+  let branchOptions = [];
+  let suggestedName = '';
+  function suggestName() {
+    const form = $('#bioDeviceForm');
+    if (form.elements.id.value || (form.elements.name.value && form.elements.name.value !== suggestedName)) return;
+    const branch = branchOptions.find((item) => String(item.id) === form.elements.branchId.value);
+    if (!branch) return;
+    const used = new Set(devices.map((item) => item.name));
+    let number = devices.filter((item) => item.branchId === branch.id).length + 1;
+    while (used.has(`ZK-${branch.code}-${String(number).padStart(2, '0')}`)) number += 1;
+    suggestedName = `ZK-${branch.code}-${String(number).padStart(2, '0')}`;
+    form.elements.name.value = suggestedName;
+  }
+
+  async function openDeviceModal(device = null) {
     const form = $('#bioDeviceForm');
     form.reset();
     clearMsg($('#bioDeviceMsg'));
     $('#bioDeviceTitle').textContent = device ? `Configurar ${device.name}` : 'Agregar lector';
     form.elements.id.value = device?.id || '';
-    form.elements.name.value = device?.name || (businessName() ? `ZKTeco ${businessName()}` : '');
+    suggestedName = '';
+    try { branchOptions = (await api('/api/admin/branches')).filter((item) => item.active || item.id === device?.branchId); }
+    catch { branchOptions = []; }
+    form.elements.branchId.innerHTML = branchOptions.map((item) => `<option value="${item.id}">${esc(item.name)} (${esc(item.code)})</option>`).join('');
+    if (device?.branchId) form.elements.branchId.value = String(device.branchId);
+    $('#bioSerialRow').classList.toggle('hidden', !device?.serialNumber);
+    $('#bioSerialText').textContent = `Se cambió el aparato por otro (el registrado es el de serie ${device?.serialNumber || ''})`;
+    form.elements.name.value = device?.name || '';
+    if (!device) suggestName();
     form.elements.ip.value = device?.ip || '';
     form.elements.port.value = device?.port || 4370;
     form.elements.deviceNumber.value = device?.deviceNumber || 1;
@@ -177,6 +200,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
   }
 
   $('#bioAddDevice').addEventListener('click', () => openDeviceModal());
+  $('#bioDeviceForm').elements.branchId.addEventListener('change', suggestName);
   $('#closeBioDeviceModal').addEventListener('click', closeDeviceModal);
   $('#cancelBioDevice').addEventListener('click', closeDeviceModal);
   $('#bioDeviceModal').addEventListener('click', (event) => { if (event.target === $('#bioDeviceModal')) closeDeviceModal(); });
@@ -215,7 +239,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
       <tr data-employee="${row.employeeId}">
         <td><strong>${esc(row.name)}</strong>${row.active ? '' : '<br><small class="muted">Inactivo</small>'}</td>
         <td><code>${esc(row.employeeCode)}</code></td>
-        <td><div class="bio-id"><input inputmode="numeric" maxlength="9" value="${esc(row.zkUserId || '')}" placeholder="Sin ID" aria-label="ID biométrico de ${esc(row.name)}"><button type="button" class="mini-btn bio-save-id">Guardar</button></div></td>
+        <td><div class="bio-id"><input inputmode="numeric" maxlength="9" value="${esc(row.zkUserId || '')}" placeholder="${row.sharedId ? `Usa el ${esc(row.sharedId)}` : 'Sin ID'}" aria-label="ID biométrico de ${esc(row.name)}"><button type="button" class="mini-btn bio-save-id">Guardar</button></div></td>
         <td>${row.zkUserId ? '<span class="badge good">Vinculado</span>' : '<span class="badge warn">Sin vincular</span>'}</td>
         <td><button type="button" class="btn secondary bio-finger" data-name="${esc(row.name)}">Asignar o cambiar huella</button></td>
       </tr>`).join('') || '<tr><td colspan="5">No hay empleados.</td></tr>';
@@ -248,11 +272,12 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, business
       const [tone, label] = EVENT_LABELS[event.status] || ['', event.status];
       return `<tr>
         <td>${esc(event.punchedLocal.replace(/^!/, ''))}</td>
+        <td>${event.branchCode ? `<code title="${esc(event.branchName || '')} · ${esc(event.deviceName)}">${esc(event.branchCode)}</code>` : '—'}</td>
         <td>${esc(event.zkUserId)}</td>
         <td>${esc(event.employee || '—')}</td>
         <td><span class="badge ${tone}">${label}</span>${event.note ? `<br><small class="muted">${esc(event.note)}</small>` : ''}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="4">Sin marcaciones todavía.</td></tr>';
+    }).join('') || '<tr><td colspan="5">Sin marcaciones todavía.</td></tr>';
     $('#bioLogBody').innerHTML = logs.map((log) => `<tr>
         <td>${esc(when(log.created_at))}</td>
         <td>${esc(log.device_name)}</td>

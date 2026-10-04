@@ -6,6 +6,7 @@ import { localDate, nowIso, zonedToDate } from '../../time.js';
 import { activeEmployeeById, registerAttendance } from '../attendance.js';
 import { queueAttendanceConfirmation } from '../mail.js';
 import { licenseGate } from '../license.js';
+import { ensureDefaultBranch } from '../branches.js';
 import { zktecoDriver } from './zktecoDriver.js';
 
 const drivers = new Map([[zktecoDriver.id, zktecoDriver]]);
@@ -56,7 +57,36 @@ function connection(row) {
   if (row.comm_key_sealed) {
     try { commKey = openJson(row.comm_key_sealed).key || ''; } catch { commKey = ''; }
   }
-  return { ip: row.ip, port: row.port, commKey };
+  return { ip: row.ip, port: row.port, commKey, verifySerial: (serial) => checkSerial(row, serial) };
+}
+
+// Un lector se reconoce por su número de serie, no por la IP. La primera vez que responde se guarda; después,
+// si en esa IP contesta otro aparato, no se le leen marcaciones: sus IDs podrían ser de otras personas.
+function checkSerial(row, serial) {
+  const found = clean(serial, 40);
+  if (!found) return;
+  const known = db.prepare('SELECT serial_number FROM biometric_devices WHERE id = ?').get(row.id)?.serial_number || '';
+  if (known === found) return;
+  if (known) {
+    throw new Error(`En ${row.ip}:${row.port} responde otro aparato (serie ${found}); el registrado es ${known}. Si lo reemplazaste, abrí Configurar y marcá "Se cambió el aparato".`);
+  }
+  const other = db.prepare('SELECT name FROM biometric_devices WHERE serial_number = ? AND id <> ?').get(found, row.id);
+  if (other) throw new Error(`Este aparato (serie ${found}) ya está registrado como "${other.name}". No se puede agregar dos veces.`);
+  db.prepare('UPDATE biometric_devices SET serial_number = ? WHERE id = ?').run(found, row.id);
+}
+
+// Las instalaciones que venían de una sola sucursal: sus lectores quedan en la primera sucursal, y el número de
+// serie que ya se conocía por el diagnóstico pasa a ser su identidad.
+function adoptDevices() {
+  const branchId = ensureDefaultBranch();
+  if (branchId) db.prepare('UPDATE biometric_devices SET branch_id = ? WHERE branch_id IS NULL').run(branchId);
+  for (const row of db.prepare("SELECT id, info_json FROM biometric_devices WHERE serial_number = ''").all()) {
+    let serial = '';
+    try { serial = clean(JSON.parse(row.info_json || '{}').serial, 40); } catch { serial = ''; }
+    if (!serial) continue;
+    try { db.prepare('UPDATE biometric_devices SET serial_number = ? WHERE id = ?').run(serial, row.id); }
+    catch { /* otro lector ya tiene ese número: se resuelve cuando responda */ }
+  }
 }
 
 function driverFor(row) {
@@ -78,9 +108,14 @@ function publicDevice(row) {
   const today = localDate();
   let info = {};
   try { info = JSON.parse(row.info_json || '{}'); } catch { info = {}; }
+  const branch = row.branch_id ? db.prepare('SELECT name, code FROM branches WHERE id = ?').get(row.branch_id) : null;
   return {
     id: row.id,
     name: row.name,
+    branchId: row.branch_id ?? null,
+    branchName: branch?.name || '',
+    branchCode: branch?.code || '',
+    serialNumber: row.serial_number || '',
     driver: row.driver,
     ip: row.ip,
     port: row.port,
@@ -125,6 +160,7 @@ function markFailure(row, error) {
 }
 
 export function listDevices() {
+  adoptDevices();
   return db.prepare('SELECT * FROM biometric_devices ORDER BY active DESC, name').all().map(publicDevice);
 }
 
@@ -154,13 +190,25 @@ function normalizeDevice(input, current = null) {
     if (!/^\d{1,9}$/.test(suppliedKey)) throw new Error('La clave de comunicación del lector debe ser numérica.');
     sealed = Number(suppliedKey) === 0 ? '' : sealJson({ key: suppliedKey });
   }
-  return { name, ip, port, deviceNumber, pollSeconds, minGapSeconds, location, sealed };
+  // Sucursal: la que se elija, la que ya tenía, o la primera si la instalación todavía tiene una sola.
+  const wantedBranch = input.branchId === undefined || input.branchId === '' || input.branchId === null
+    ? (current?.branch_id ?? ensureDefaultBranch())
+    : Number(input.branchId);
+  let branchId = null;
+  if (wantedBranch != null) {
+    const branch = db.prepare('SELECT id, active FROM branches WHERE id = ?').get(wantedBranch);
+    if (!branch) throw new Error('La sucursal elegida no existe.');
+    if (!branch.active && branch.id !== current?.branch_id) throw new Error('La sucursal elegida está inactiva.');
+    branchId = branch.id;
+  }
+  return { name, ip, port, deviceNumber, pollSeconds, minGapSeconds, location, sealed, branchId };
 }
 
 function friendlyUnique(error) {
   const text = String(error.message);
   if (!text.includes('UNIQUE')) return error;
-  return new Error(text.includes('name') ? 'Ya existe un lector con ese nombre.' : 'Ya existe un lector con esa IP y puerto.');
+  if (text.includes('serial_number')) return new Error('Ese aparato ya está registrado (mismo número de serie).');
+  return new Error(text.includes('.name') ? 'Ya existe un lector con ese nombre.' : 'Ya existe un lector con esa IP y puerto.');
 }
 
 export function createDevice(input) {
@@ -169,10 +217,10 @@ export function createDevice(input) {
   const since = zonedToDate(`${localDate()} 00:00:00`).toISOString();
   try {
     const result = db.prepare(`INSERT INTO biometric_devices(name, ip, port, device_number, comm_key_sealed, location,
-        poll_seconds, min_gap_seconds, import_since, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        poll_seconds, min_gap_seconds, import_since, branch_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(device.name, device.ip, device.port, device.deviceNumber, device.sealed, device.location,
-        device.pollSeconds, device.minGapSeconds, since, now, now);
-    audit('ADMIN', 'CREATE', 'BIOMETRIC_DEVICE', result.lastInsertRowid, { name: device.name, ip: device.ip, port: device.port });
+        device.pollSeconds, device.minGapSeconds, since, device.branchId, now, now);
+    audit('ADMIN', 'CREATE', 'BIOMETRIC_DEVICE', result.lastInsertRowid, { name: device.name, ip: device.ip, port: device.port, branchId: device.branchId });
     return publicDevice(getRow(result.lastInsertRowid));
   } catch (error) { throw friendlyUnique(error); }
 }
@@ -183,11 +231,17 @@ export function updateDevice(id, input) {
   const moved = device.ip !== current.ip || device.port !== current.port;
   try {
     db.prepare(`UPDATE biometric_devices SET name = ?, ip = ?, port = ?, device_number = ?, comm_key_sealed = ?,
-        location = ?, poll_seconds = ?, min_gap_seconds = ?, updated_at = ? WHERE id = ?`)
+        location = ?, poll_seconds = ?, min_gap_seconds = ?, branch_id = ?, updated_at = ? WHERE id = ?`)
       .run(device.name, device.ip, device.port, device.deviceNumber, device.sealed, device.location,
-        device.pollSeconds, device.minGapSeconds, nowIso(), current.id);
+        device.pollSeconds, device.minGapSeconds, device.branchId, nowIso(), current.id);
   } catch (error) { throw friendlyUnique(error); }
-  if (moved) db.prepare('UPDATE biometric_devices SET last_record_count = NULL WHERE id = ?').run(current.id);
+  // "Se cambió el aparato": se olvida el número de serie y el próximo que responda pasa a ser el registrado.
+  const replaced = input.resetSerial === true || input.resetSerial === 'true' || input.resetSerial === 'on';
+  if (replaced) {
+    db.prepare("UPDATE biometric_devices SET serial_number = '', info_json = '{}', consecutive_failures = 0, last_error = '' WHERE id = ?").run(current.id);
+    audit('ADMIN', 'BIOMETRIC_DEVICE_REPLACED', 'BIOMETRIC_DEVICE', current.id, { previousSerial: current.serial_number });
+  }
+  if (moved || replaced) db.prepare('UPDATE biometric_devices SET last_record_count = NULL WHERE id = ?').run(current.id);
   state(current.id).nextPollAt = 0;
   audit('ADMIN', 'UPDATE', 'BIOMETRIC_DEVICE', current.id, { name: device.name, ip: device.ip, port: device.port,
     commKeyChanged: device.sealed !== current.comm_key_sealed });
@@ -211,17 +265,25 @@ export function listMappings(deviceId) {
         m.zk_user_id AS zkUserId
       FROM employees e LEFT JOIN employee_biometric_map m ON m.employee_id = e.id AND m.device_id = ?
       WHERE COALESCE(e.archived, 0) = 0 ORDER BY e.active DESC, e.name`).all(device.id);
-  return { deviceId: device.id, deviceName: device.name, suggestedId: nextFreeId(device.id), rows };
+  for (const row of rows) row.sharedId = row.zkUserId ? '' : (idOnOtherReaders(row.employeeId, device.id)?.id || '');
+  return { deviceId: device.id, deviceName: device.name, suggestedId: nextFreeId(), rows };
 }
 
-// Nunca sugiere un ID que ya se usó en este lector (aunque el empleado se haya eliminado): si el ID se
-// reutilizara, las marcaciones viejas de esa huella podrían atribuirse a la persona nueva.
-function nextFreeId(deviceId) {
+// El ID biométrico es de la persona, no del lector: un empleado usa el mismo ID en todos los lectores y un ID
+// nunca es de dos personas. Tampoco se sugiere uno que ya se usó (aunque el empleado se haya eliminado), para
+// que marcaciones viejas de esa huella no se le atribuyan a alguien nuevo.
+function nextFreeId() {
   const seen = [
-    ...db.prepare('SELECT zk_user_id AS id FROM employee_biometric_map WHERE device_id = ?').all(deviceId),
-    ...db.prepare('SELECT DISTINCT zk_user_id AS id FROM biometric_events WHERE device_id = ?').all(deviceId)
+    ...db.prepare('SELECT zk_user_id AS id FROM employee_biometric_map').all(),
+    ...db.prepare('SELECT DISTINCT zk_user_id AS id FROM biometric_events').all()
   ].map((row) => Number(row.id)).filter((id) => Number.isInteger(id) && id > 0 && id < 999999999);
   return String(seen.length ? Math.max(...seen) + 1 : 1);
+}
+
+function idOnOtherReaders(employeeId, deviceId) {
+  return db.prepare(`SELECT m.zk_user_id AS id, d.name AS device FROM employee_biometric_map m
+      JOIN biometric_devices d ON d.id = m.device_id
+      WHERE m.employee_id = ? AND m.device_id <> ? ORDER BY m.id LIMIT 1`).get(employeeId, deviceId) || null;
 }
 
 export function setMapping({ employeeId, deviceId, zkUserId }) {
@@ -235,9 +297,14 @@ export function setMapping({ employeeId, deviceId, zkUserId }) {
     return { zkUserId: '', reprocessed: 0 };
   }
   if (!/^[1-9]\d{0,8}$/.test(value)) throw new Error('El ID biométrico debe ser un número entre 1 y 999999999.');
-  const owner = db.prepare(`SELECT e.name FROM employee_biometric_map m JOIN employees e ON e.id = m.employee_id
-      WHERE m.device_id = ? AND m.zk_user_id = ? AND m.employee_id <> ?`).get(device.id, value, employee.id);
-  if (owner) throw new Error(`El ID biométrico ${value} ya está asignado a ${owner.name} en este lector.`);
+  const owner = db.prepare(`SELECT e.name, d.name AS device FROM employee_biometric_map m
+      JOIN employees e ON e.id = m.employee_id JOIN biometric_devices d ON d.id = m.device_id
+      WHERE m.zk_user_id = ? AND m.employee_id <> ? ORDER BY (m.device_id = ?) DESC LIMIT 1`).get(value, employee.id, device.id);
+  if (owner) throw new Error(`El ID biométrico ${value} ya está asignado a ${owner.name} (${owner.device}). Cada persona tiene su propio ID en todos los lectores.`);
+  const elsewhere = idOnOtherReaders(employee.id, device.id);
+  if (elsewhere && elsewhere.id !== value) {
+    throw new Error(`${employee.name} ya usa el ID ${elsewhere.id} en ${elsewhere.device}. Tiene que usar el mismo ID en todos los lectores.`);
+  }
   db.prepare(`INSERT INTO employee_biometric_map(employee_id, device_id, zk_user_id, created_at) VALUES(?, ?, ?, ?)
       ON CONFLICT(device_id, employee_id) DO UPDATE SET zk_user_id = excluded.zk_user_id`)
     .run(employee.id, device.id, value, nowIso());
@@ -261,7 +328,8 @@ export function employeeBiometrics(employeeId) {
   return db.prepare(`SELECT d.id AS deviceId, d.name AS deviceName, d.active, m.zk_user_id AS zkUserId
       FROM biometric_devices d LEFT JOIN employee_biometric_map m ON m.device_id = d.id AND m.employee_id = ?
       ORDER BY d.active DESC, d.name`).all(Number(employeeId))
-    .map((row) => ({ ...row, active: Boolean(row.active), suggestedId: row.zkUserId || nextFreeId(row.deviceId) }));
+    .map((row) => ({ ...row, active: Boolean(row.active),
+      suggestedId: row.zkUserId || idOnOtherReaders(Number(employeeId), row.deviceId)?.id || nextFreeId() }));
 }
 
 // ---------- Ingreso de marcaciones (idempotente) ----------
@@ -408,6 +476,7 @@ export function syncDevice(id, { full = false, manual = false, action = 'Sincron
     try {
       if (!everything && !periodic) {
         const peek = await driver.peek(connection(row));
+        checkSerial(row, peek.serial);
         if (peek.sizes.records === row.last_record_count) {
           markContact(row);
           if (manual) addLog(row, { action, message: 'Sin marcaciones nuevas en el lector.', durationMs: Date.now() - started });
@@ -444,6 +513,7 @@ export function testConnection(id) {
     const started = Date.now();
     try {
       const result = await driverFor(row).testConnection(connection(row));
+      checkSerial(row, result.serial);
       markContact(row);
       addLog(row, { action: 'Prueba de conexión', message: `Responde en ${result.latencyMs} ms`, durationMs: Date.now() - started });
       if (row.consecutive_failures > 0) state(row.id).nextPollAt = 0;
@@ -463,6 +533,7 @@ export function diagnostics(id) {
     const base = { address: `${row.ip}:${row.port}`, checkedAt: nowIso() };
     try {
       const info = await driverFor(row).diagnostics(connection(row));
+      checkSerial(row, info.serial);
       const deviceInstant = info.deviceTime ? zonedToDate(info.deviceTime) : null;
       const stored = { serial: info.serial || '', model: info.model || '', platform: info.platform || '',
         firmware: info.firmware || '', mac: info.mac || '' };
@@ -496,7 +567,7 @@ export async function enrollEmployee({ employeeId, deviceId, zkUserId, replace =
   if (!employee) throw new Error('Empleado no encontrado.');
   const current = db.prepare('SELECT zk_user_id FROM employee_biometric_map WHERE employee_id = ? AND device_id = ?')
     .get(employee.id, device.id)?.zk_user_id;
-  const wanted = String(zkUserId ?? '').trim() || current || nextFreeId(device.id);
+  const wanted = String(zkUserId ?? '').trim() || current || idOnOtherReaders(employee.id, device.id)?.id || nextFreeId();
   if (wanted !== current) setMapping({ employeeId: employee.id, deviceId: device.id, zkUserId: wanted });
 
   return exclusive(device.id, async () => {
@@ -531,9 +602,10 @@ export function listLogs({ deviceId = null, limit = 100 } = {}) {
 
 export function listEvents({ deviceId = null, limit = 100 } = {}) {
   const max = Math.min(500, Math.max(1, Number(limit) || 100));
-  const sql = `SELECT b.id, b.device_id AS deviceId, d.name AS deviceName, b.zk_user_id AS zkUserId,
-      b.punched_local AS punchedLocal, b.status, b.note, e.name AS employee
+  const sql = `SELECT b.id, b.device_id AS deviceId, d.name AS deviceName, br.code AS branchCode, br.name AS branchName,
+      b.zk_user_id AS zkUserId, b.punched_local AS punchedLocal, b.status, b.note, e.name AS employee
     FROM biometric_events b JOIN biometric_devices d ON d.id = b.device_id
+    LEFT JOIN branches br ON br.id = d.branch_id
     LEFT JOIN employees e ON e.id = b.employee_id`;
   return deviceId
     ? db.prepare(`${sql} WHERE b.device_id = ? ORDER BY b.id DESC LIMIT ?`).all(Number(deviceId), max)
@@ -557,6 +629,7 @@ function tick() {
 
 export function startBiometricWorker() {
   stopping = false;
+  try { adoptDevices(); } catch { /* se reintenta al abrir la pantalla de lectores */ }
   if (workerTimer) return;
   workerTimer = setInterval(tick, 3000);
   workerTimer.unref?.();

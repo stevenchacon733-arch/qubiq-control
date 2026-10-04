@@ -94,6 +94,9 @@ export function setBranchActive(id, active) {
   if (!active && db.prepare('SELECT COUNT(*) AS n FROM branches WHERE active = 1 AND id <> ?').get(current.id).n === 0) {
     throw new Error('Tiene que quedar al menos una sucursal activa.');
   }
+  if (!active && db.prepare('SELECT COUNT(*) AS n FROM biometric_devices WHERE branch_id = ? AND active = 1').get(current.id).n > 0) {
+    throw new Error('Esa sucursal tiene lectores de huella activos. Desactivalos o pasalos a otra sucursal primero.');
+  }
   db.prepare('UPDATE branches SET active = ?, updated_at = ? WHERE id = ?').run(active ? 1 : 0, nowIso(), current.id);
   audit('ADMIN', active ? 'ACTIVATE' : 'DEACTIVATE', 'BRANCH', current.id);
   return publicBranch(getRow(current.id));

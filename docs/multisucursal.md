@@ -8,7 +8,7 @@ Qubiq Control. Se construye por fases sobre lo que ya funciona; este documento s
 | Fase | Qué | Estado |
 | --- | --- | --- |
 | 1 | Sucursales (`branches`) | **Hecha** |
-| 2 | Lectores asociados a una sucursal | Pendiente |
+| 2 | Lectores asociados a una sucursal | **Hecha** |
 | 3 | `branch_id`, `device_id` y `event_uuid` en las marcaciones | Pendiente |
 | 4 | API central para recibir marcaciones | Pendiente: falta decidir dónde vive el servidor central |
 | 5 | La integración ZKTeco envía los eventos al central | Pendiente |
@@ -46,8 +46,7 @@ Todos son agregados; nada se borra ni se renombra.
 
 - **Fase 1 (hecha):** `branches(id, name, code, active, created_at, updated_at)`. La sucursal que ya estaba escrita
   en "Identidad del negocio" se convierte sola en la primera.
-- **Fase 2:** `biometric_devices` + `branch_id`, `serial_number`. El serial lo entrega el propio lector; así un
-  lector sigue siendo el mismo aunque le cambie la IP.
+- **Fase 2 (hecha):** `biometric_devices` + `branch_id`, `serial_number`. Ver "Lectores y sucursales" más abajo.
 - **Fase 3:** `biometric_events` + `event_uuid` único, `branch_id`, `source`. `attendance` + `branch_id`,
   `device_id` (cada fila es una entrada o una salida, así que entrada y salida pueden ser de sucursales
   distintas). Lo que ya existe queda en la primera sucursal.
@@ -56,6 +55,24 @@ Todos son agregados; nada se borra ni se renombra.
 
 `event_uuid` se va a calcular a partir del serial del lector, el ID del usuario y la hora de la marcación, no al
 azar: así, si un agente se reinstala y vuelve a leer el lector, genera los mismos UUID y el central no duplica.
+
+## Lectores y sucursales (fase 2)
+
+- **Cada lector pertenece a una sucursal.** Se elige al agregarlo o en *Configurar*. Los lectores que ya existían
+  quedan solos en la primera sucursal. Una sucursal con lectores activos no se puede desactivar.
+- **Un lector se reconoce por su número de serie, no por la IP.** El serial lo entrega el propio aparato y se
+  guarda la primera vez que responde. Desde ahí, en cada conexión se compara:
+  - si en esa IP contesta **otro** aparato, no se le leen marcaciones (sus IDs podrían ser de otras personas) y el
+    lector queda en error hasta que el administrador marque *Se cambió el aparato* en Configurar;
+  - el **mismo** aparato no se puede registrar dos veces aunque se le ponga otra IP o puerto.
+- **El ID biométrico es de la persona, no del lector.** Un empleado usa el mismo ID en todos los lectores y un ID
+  nunca es de dos personas; el sistema lo exige al vincular. Al asignar huella en un segundo lector se propone
+  solo el ID que la persona ya tiene. Esta regla es la que permite que el central reconozca a la misma persona
+  marque donde marque.
+- **Nombre sugerido** para un lector nuevo: `ZK-<código de sucursal>-<número>`, por ejemplo `ZK-AGZ-01`.
+
+Con esto, dos lectores conectados a la **misma** computadora ya funcionan como dos sucursales. Lo que falta para
+lectores en locales distintos es que cada local le mande sus marcaciones al central (fases 4 a 6).
 
 ## Comunicación entre sucursales
 

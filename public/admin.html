@@ -200,7 +200,7 @@
 
     <div class="card bio-block">
       <div class="section-head">
-        <div><h2>Empleados y huellas</h2><span class="muted">Cada empleado usa en el lector el mismo ID que tiene aquí. Un ID no puede repetirse en el mismo lector.</span></div>
+        <div><h2>Empleados y huellas</h2><span class="muted">Cada empleado usa el mismo ID en todos los lectores, y un ID nunca es de dos personas.</span></div>
         <div class="button-row compact"><select id="bioMapDevice" aria-label="Lector"></select></div>
       </div>
       <div class="table-wrap">
@@ -216,8 +216,8 @@
         <div class="section-head"><div><h2>Últimas marcaciones del lector</h2><span class="muted">Lo que llegó del lector y qué se hizo con cada marcación.</span></div></div>
         <div class="table-wrap">
           <table class="bio-table">
-            <thead><tr><th>Fecha y hora</th><th>ID</th><th>Empleado</th><th>Resultado</th></tr></thead>
-            <tbody id="bioEventBody"><tr><td colspan="4">Sin marcaciones todavía.</td></tr></tbody>
+            <thead><tr><th>Fecha y hora</th><th>Sucursal</th><th>ID</th><th>Empleado</th><th>Resultado</th></tr></thead>
+            <tbody id="bioEventBody"><tr><td colspan="5">Sin marcaciones todavía.</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -390,7 +390,11 @@
       <label>Número de dispositivo<input name="deviceNumber" type="number" min="1" max="254" value="1" required></label>
       <label>Clave de comunicación<input name="commKey" type="password" inputmode="numeric" maxlength="9" autocomplete="new-password" placeholder="Vacía si el lector no tiene"></label>
     </div>
-    <label>Ubicación o sucursal<input name="location" maxlength="120" placeholder="Ej. Entrada principal"></label>
+    <div class="form-row">
+      <label>Sucursal<select name="branchId" required></select></label>
+      <label>Ubicación en el local<input name="location" maxlength="120" placeholder="Ej. Entrada principal"></label>
+    </div>
+    <label id="bioSerialRow" class="check-row hidden"><input type="checkbox" name="resetSerial"> <span id="bioSerialText">Se cambió el aparato por otro</span></label>
     <div class="form-row">
       <label>Sincronizar cada (segundos)<input name="pollSeconds" type="number" min="10" max="3600" value="30" required></label>
       <label>Ignorar doble toque (segundos)<input name="minGapSeconds" type="number" min="0" max="3600" value="120" required></label>

@@ -214,6 +214,15 @@ CREATE INDEX IF NOT EXISTS idx_bio_logs_device ON biometric_sync_logs(device_id,
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bio_events_attendance ON biometric_events(attendance_id) WHERE attendance_id IS NOT NULL;
 `);
 
+// Fase 2 multisucursal: cada lector pertenece a una sucursal y se reconoce por su número de serie, no por la IP.
+const deviceColumns = db.prepare('PRAGMA table_info(biometric_devices)').all().map(row => row.name);
+if (!deviceColumns.includes('branch_id')) db.exec('ALTER TABLE biometric_devices ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+if (!deviceColumns.includes('serial_number')) db.exec("ALTER TABLE biometric_devices ADD COLUMN serial_number TEXT NOT NULL DEFAULT ''");
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bio_devices_serial ON biometric_devices(serial_number) WHERE serial_number <> '';
+CREATE INDEX IF NOT EXISTS idx_bio_devices_branch ON biometric_devices(branch_id);
+`);
+
 export const getSetting = (key) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
 export const setSetting = (key, value) => db.prepare(`
   INSERT INTO settings(key, value) VALUES(?, ?)

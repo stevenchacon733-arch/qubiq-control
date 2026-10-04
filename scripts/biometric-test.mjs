@@ -11,7 +11,8 @@ import { FakeZkDevice } from './fake-zk-device.mjs';
 const self = fileURLToPath(import.meta.url);
 const root = resolve(self, '..', '..');
 const restartMode = process.argv[2] === '--after-restart';
-const dataDir = restartMode ? process.argv[3] : resolve(root, `.smoke-bio-${Date.now()}`);
+const migrationMode = process.argv[2] === '--migration';
+const dataDir = restartMode || migrationMode ? process.argv[3] : resolve(root, `.smoke-bio-${Date.now()}`);
 const port = 3247;
 const licensePort = 3248;
 mkdirSync(dataDir, { recursive: true });
@@ -51,6 +52,7 @@ await new Promise((done) => licenseServer.listen(licensePort, '127.0.0.1', done)
 
 const { db } = await import('../src/db.js');
 const bio = await import('../src/services/biometric/index.js');
+const branches = await import('../src/services/branches.js');
 const attendance = await import('../src/services/attendance.js');
 const license = await import('../src/services/license.js');
 const { zktecoDriver } = await import('../src/services/biometric/zktecoDriver.js');
@@ -71,7 +73,8 @@ try {
     await fake.start(state.port);
     const before = count('SELECT COUNT(*) AS n FROM attendance');
     const eventsBefore = count('SELECT COUNT(*) AS n FROM biometric_events');
-    assert.equal(bio.listDevices().length, 2, 'Los lectores configurados deben sobrevivir al reinicio.');
+    assert.equal(bio.listDevices().length, 3, 'Los lectores configurados deben sobrevivir al reinicio.');
+    assert.equal(bio.listDevices()[0].branchCode, 'AGZ');
     bio.startBiometricWorker();
     await until(() => bio.listDevices()[0].status === 'CONNECTED' && Boolean(bio.listDevices()[0].lastSyncAt
       && Date.parse(bio.listDevices()[0].lastSyncAt) > state.stoppedAt), 'sincronización automática tras el reinicio');
@@ -79,6 +82,16 @@ try {
     assert.equal(count('SELECT COUNT(*) AS n FROM biometric_events'), eventsBefore, 'El reinicio no debe duplicar eventos.');
     bio.stopBiometricWorker();
     console.log('BIOMETRIC_RESTART_OK');
+  } else if (migrationMode) {
+    // ----- Base de datos de una versión anterior: el lector que ya existía queda en la sucursal que ya había -----
+    const migrated = bio.listDevices();
+    assert.equal(migrated.length, 1);
+    assert.equal(migrated[0].name, 'Lector Antiguo');
+    assert.equal(migrated[0].branchName, 'Sucursal Vieja');
+    assert.equal(migrated[0].branchCode, 'SUV');
+    assert.equal(migrated[0].serialNumber, 'OLD123', 'El número de serie ya conocido pasa a ser su identidad.');
+    assert.equal(branches.listBranches().length, 1);
+    console.log('BIOMETRIC_MIGRATION_OK');
   } else {
     await license.saveLicenseKey('QBQ-TEST-TEST-TEST-TEST');
     assert.equal(license.licenseStatus().valid, true);
@@ -86,6 +99,9 @@ try {
     const scheduleId = attendance.createSchedule({ name: 'Turno prueba', startTime: '09:00', endTime: '17:00', toleranceMinutes: 5 });
     const person = (code, name, nationalId) => attendance.createEmployee({ employeeCode: code, name, nationalId,
       email: `${code.toLowerCase()}@example.com`, pin: '1234', scheduleId });
+    const agz = branches.createBranch({ name: 'Aguas Zarcas' });
+    const ven = branches.createBranch({ name: 'Venecia' });
+    assert.equal(agz.code, 'AGZ');
     const ana = person('EMP001', 'Ana Prueba', '101110111');
     const beto = person('EMP002', 'Beto Prueba', '202220222');
     const caro = person('EMP003', 'Carolina Ñandú', '303330333');
@@ -97,7 +113,11 @@ try {
     assert.throws(() => bio.createDevice({ name: 'Malo', ip: '192.168.1.999', port: 4370 }), /red local/);
     assert.throws(() => bio.createDevice({ name: 'Puerto', ip: '192.168.1.202', port: 70000 }), /puerto/i);
     assert.throws(() => bio.createDevice({ name: 'Clave', ip: '192.168.1.202', port: 4370, commKey: 'abc' }), /numérica/);
-    const device = bio.createDevice({ name: 'Lector Principal', ip: '127.0.0.1', port: devicePort, commKey: '54321', location: 'Entrada' });
+    assert.throws(() => bio.createDevice({ name: 'Sin sucursal', ip: '192.168.1.50', port: 4370, branchId: 9999 }), /sucursal elegida no existe/);
+    const device = bio.createDevice({ name: 'Lector Principal', ip: '127.0.0.1', port: devicePort, commKey: '54321', location: 'Entrada', branchId: agz.id });
+    assert.equal(device.branchCode, 'AGZ');
+    assert.equal(device.branchName, 'Aguas Zarcas');
+    assert.equal(device.serialNumber, '', 'El número de serie se toma del propio lector la primera vez que responde.');
     assert.equal(device.hasCommKey, true);
     assert.equal(JSON.stringify(device).includes('54321'), false, 'La clave nunca se devuelve.');
     const stored = db.prepare('SELECT comm_key_sealed FROM biometric_devices WHERE id = ?').get(device.id).comm_key_sealed;
@@ -116,6 +136,7 @@ try {
     test = await bio.testConnection(device.id);
     assert.equal(test.ok, true, test.error);
     assert.equal(bio.listDevices()[0].status, 'CONNECTED');
+    assert.equal(bio.listDevices()[0].serialNumber, 'SIM0001');
     ok('conexión correcta con clave de comunicación; clave incorrecta rechazada');
 
     // ----- Dispositivo desconectado -----
@@ -337,6 +358,39 @@ try {
     assert.equal(typeof diag.latencyMs, 'number');
     ok('diagnóstico: modelo, firmware, latencia, reloj y pendientes');
 
+    // ----- El lector se reconoce por su número de serie, no por la IP -----
+    const eventsBeforeSwap = count('SELECT COUNT(*) AS n FROM biometric_events');
+    fake.serial = 'OTRO999';
+    fake.punch('1', ago(2));
+    await assert.rejects(bio.syncDevice(device.id, { manual: true, full: true }), /responde otro aparato \(serie OTRO999\)/);
+    assert.equal(count('SELECT COUNT(*) AS n FROM biometric_events'), eventsBeforeSwap, 'A un aparato desconocido no se le leen marcaciones.');
+    test = await bio.testConnection(device.id);
+    assert.equal(test.ok, false);
+    assert.equal(bio.listDevices().find((item) => item.id === device.id).status, 'DISCONNECTED');
+    fake.records.pop();
+    // Reemplazo autorizado por el administrador.
+    bio.updateDevice(device.id, { resetSerial: true });
+    test = await bio.testConnection(device.id);
+    assert.equal(test.ok, true, test.error);
+    assert.equal(bio.listDevices().find((item) => item.id === device.id).serialNumber, 'OTRO999');
+    fake.serial = 'SIM0001';
+    bio.updateDevice(device.id, { resetSerial: 'on' });
+    test = await bio.testConnection(device.id);
+    assert.equal(test.ok, true, test.error);
+    assert.equal(bio.listDevices().find((item) => item.id === device.id).serialNumber, 'SIM0001');
+    // El mismo aparato no se puede registrar dos veces, aunque sea con otra IP o puerto.
+    const twin = new FakeZkDevice({ serial: 'SIM0001' });
+    const twinPort = await twin.start(0);
+    const twinDevice = bio.createDevice({ name: 'Duplicado', ip: '127.0.0.1', port: twinPort, branchId: ven.id });
+    test = await bio.testConnection(twinDevice.id);
+    assert.equal(test.ok, false);
+    assert.match(test.error, /ya está registrado como "Lector Principal"/);
+    bio.setDeviceActive(twinDevice.id, false);
+    await twin.stop();
+    sync = await bio.syncDevice(device.id, { manual: true, full: true });
+    assert.equal(sync.ok, true);
+    ok('identidad por número de serie: aparato cambiado o repetido no entra; el reemplazo se autoriza a mano');
+
     // ----- Registro de huella desde Qubiq (la huella queda solo en el lector) -----
     fake.users = [{ uid: 1, userId: '77', name: 'Existente' }];
     let enroll = await bio.enrollEmployee({ employeeId: caro, deviceId: device.id });
@@ -390,15 +444,31 @@ try {
     ok('asignar huella: crea el usuario en el lector, pide el dedo y no guarda biometría en Qubiq');
 
     // ----- Formato de usuario antiguo (28 bytes) en un lector vacío -----
-    const old = new FakeZkDevice({ userPacketSize: 28 });
+    const old = new FakeZkDevice({ userPacketSize: 28, serial: 'SIM0002' });
     const oldPort = await old.start(0);
-    const second = bio.createDevice({ name: 'Lector Bodega', ip: '127.0.0.1', port: oldPort, location: 'Sucursal B' });
-    enroll = await bio.enrollEmployee({ employeeId: ana, deviceId: second.id, zkUserId: '15' });
+    const second = bio.createDevice({ name: 'Lector Bodega', ip: '127.0.0.1', port: oldPort, location: 'Bodega', branchId: ven.id });
+    assert.equal(second.branchCode, 'VEN');
+    // Un empleado usa el mismo ID en todos los lectores, y un ID nunca es de dos personas.
+    assert.throws(() => bio.setMapping({ employeeId: ana, deviceId: second.id, zkUserId: '15' }), /mismo ID en todos los lectores/);
+    assert.throws(() => bio.setMapping({ employeeId: caro, deviceId: second.id, zkUserId: '1' }), /ya está asignado a Ana Prueba/);
+    assert.equal(bio.employeeBiometrics(ana).find((item) => item.deviceId === second.id).suggestedId, '1');
+    assert.equal(bio.listMappings(second.id).rows.find((row) => row.employeeId === ana).sharedId, '1');
+    enroll = await bio.enrollEmployee({ employeeId: ana, deviceId: second.id });
     assert.equal(enroll.enrolled, true, enroll.error);
-    assert.deepEqual(old.users.map((user) => user.userId), ['15']);
-    assert.equal(bio.employeeBiometrics(ana).length, 2, 'Cada lector tiene su propio vínculo con el empleado.');
+    assert.equal(enroll.zkUserId, '1', 'En el segundo lector se le pone el mismo ID que ya tenía.');
+    assert.deepEqual(old.users.map((user) => user.userId), ['1']);
+    assert.equal(bio.employeeBiometrics(ana).length, 3);
+    assert.equal(bio.listDevices().find((item) => item.id === second.id).serialNumber, 'SIM0002');
+    assert.throws(() => branches.setBranchActive(ven.id, false), /lectores de huella activos/);
+    // La misma persona marca en una sucursal y en otra: es un solo empleado.
+    old.punch('1', ago(1));
+    sync = await bio.syncDevice(second.id, { manual: true });
+    assert.equal(sync.imported, 1);
+    const crossEvent = bio.listEvents({ deviceId: second.id })[0];
+    assert.equal(crossEvent.employee, 'Ana Prueba');
+    assert.equal(crossEvent.branchCode, 'VEN');
     await old.stop();
-    ok('varios lectores: configuración y vínculos independientes; formato de usuario detectado solo');
+    ok('varios lectores: cada uno en su sucursal, mismo ID por empleado, formato de usuario detectado solo');
 
     // ----- API: solo con sesión de administrador -----
     const { startServer } = await import('../src/server.js');
@@ -411,7 +481,8 @@ try {
     setSetting('admin_session_nonce', verifyToken(token, 'admin').nonce);
     const headers = { Cookie: `qubiq_session=${encodeURIComponent(token)}`, 'Content-Type': 'application/json' };
     const listed = await (await fetch(`http://127.0.0.1:${port}/api/admin/biometric/devices`, { headers })).json();
-    assert.equal(listed.length, 2);
+    assert.equal(listed.length, 3);
+    assert.equal(listed.find((item) => item.name === 'Lector Principal').branchCode, 'AGZ');
     assert.equal(JSON.stringify(listed).includes('54321'), false);
     assert.equal('comm_key_sealed' in listed[0], false);
     const system = await (await fetch(`http://127.0.0.1:${port}/api/admin/system`, { headers })).json();
@@ -453,6 +524,31 @@ try {
     const child = spawnSync(process.execPath, [self, '--after-restart', dataDir], { encoding: 'utf8', timeout: 30000 });
     assert.match(child.stdout, /BIOMETRIC_RESTART_OK/, child.stderr);
     ok('reinicio de Windows (proceso nuevo): conserva configuración y no duplica');
+
+    // ----- Actualización desde una versión sin sucursales -----
+    const { DatabaseSync } = await import('node:sqlite');
+    const oldDir = resolve(root, `.smoke-bio-old-${Date.now()}`);
+    mkdirSync(oldDir, { recursive: true });
+    const oldDb = new DatabaseSync(resolve(oldDir, 'qubiq.db'));
+    oldDb.exec(`
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO settings VALUES('admin_password_hash', 'x:y'), ('company_branchName', 'Sucursal Vieja');
+      CREATE TABLE biometric_devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, driver TEXT NOT NULL DEFAULT 'zkteco',
+        ip TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 4370 CHECK(port BETWEEN 1 AND 65535),
+        device_number INTEGER NOT NULL DEFAULT 1, comm_key_sealed TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1, poll_seconds INTEGER NOT NULL DEFAULT 30, min_gap_seconds INTEGER NOT NULL DEFAULT 120,
+        import_since TEXT NOT NULL, last_contact_at TEXT, last_sync_at TEXT, last_error TEXT NOT NULL DEFAULT '',
+        last_error_at TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_record_count INTEGER, last_event_local TEXT,
+        info_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(ip, port));
+      INSERT INTO biometric_devices(name, ip, port, import_since, info_json, created_at, updated_at)
+        VALUES('Lector Antiguo', '192.168.1.202', 4370, '2026-10-01T06:00:00.000Z', '{"serial":"OLD123"}',
+               '2026-10-01T06:00:00.000Z', '2026-10-01T06:00:00.000Z');`);
+    oldDb.close();
+    const migration = spawnSync(process.execPath, [self, '--migration', oldDir], { encoding: 'utf8', timeout: 30000 });
+    try { rmSync(oldDir, { recursive: true, force: true }); } catch { /* limpieza no crítica */ }
+    assert.match(migration.stdout, /BIOMETRIC_MIGRATION_OK/, migration.stderr);
+    ok('actualización: el lector que ya existía queda en la sucursal que ya había, con su número de serie');
 
     console.log(`BIOMETRIC_TEST_OK ${passed} grupos de pruebas`);
   }
