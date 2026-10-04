@@ -240,6 +240,51 @@ CREATE INDEX IF NOT EXISTS idx_attendance_no_branch ON attendance(id) WHERE bran
 CREATE INDEX IF NOT EXISTS idx_attendance_branch ON attendance(branch_id, work_date);
 `);
 
+// Fases 4 a 6 multisucursal. Una instalación es "central" (recibe) o "sucursal" (envía), nunca las dos.
+// - branch_agents: en la central, una fila por computadora de sucursal autorizada a enviar marcaciones. De la clave
+//   solo se guarda el hash.
+// - biometric_devices.agent_id: en la central, lector que está en otra sucursal y llega a través de esa computadora.
+// - pending_events: en la sucursal, cola de marcaciones por enviar. Sobrevive a cortes de internet y reinicios.
+db.exec(`
+CREATE TABLE IF NOT EXISTS branch_agents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id),
+  key_hash TEXT NOT NULL UNIQUE,
+  key_hint TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  last_seen_at TEXT,
+  last_ip TEXT NOT NULL DEFAULT '',
+  app_version TEXT NOT NULL DEFAULT '',
+  queue_pending INTEGER NOT NULL DEFAULT 0,
+  events_received INTEGER NOT NULL DEFAULT 0,
+  last_event_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_uuid TEXT NOT NULL UNIQUE,
+  device_id INTEGER NOT NULL,
+  device_serial TEXT NOT NULL,
+  zk_user_id TEXT NOT NULL,
+  punched_local TEXT NOT NULL,
+  verify_status INTEGER NOT NULL DEFAULT 0,
+  punch_state INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','syncing','synced','error')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  central_result TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  synced_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_events_status ON pending_events(status, punched_local);
+CREATE INDEX IF NOT EXISTS idx_pending_events_device ON pending_events(device_id, punched_local);
+`);
+if (!deviceColumns.includes('agent_id')) db.exec('ALTER TABLE biometric_devices ADD COLUMN agent_id INTEGER REFERENCES branch_agents(id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_bio_devices_agent ON biometric_devices(agent_id) WHERE agent_id IS NOT NULL;');
+
 export const getSetting = (key) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
 export const setSetting = (key, value) => db.prepare(`
   INSERT INTO settings(key, value) VALUES(?, ?)

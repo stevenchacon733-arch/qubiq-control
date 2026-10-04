@@ -33,12 +33,13 @@
   </header>
 
   <div id="licenseBanner" class="license-banner hidden"></div>
+  <div id="branchBanner" class="license-banner warn hidden" role="status"></div>
 
   <nav class="tabs">
-    <button class="tab active" data-tab="dashboard">Hoy</button>
-    <button class="tab" data-tab="employees">Empleados</button>
-    <button class="tab" data-tab="schedules">Horarios</button>
-    <button class="tab" data-tab="payroll">Pre-planilla</button>
+    <button class="tab active central-only" data-tab="dashboard">Hoy</button>
+    <button class="tab central-only" data-tab="employees">Empleados</button>
+    <button class="tab central-only" data-tab="schedules">Horarios</button>
+    <button class="tab central-only" data-tab="payroll">Pre-planilla</button>
     <button class="tab" data-tab="biometric">Lector de Huella</button>
     <button class="tab" data-tab="settings">Configuración</button>
   </nav>
@@ -192,7 +193,7 @@
   <section id="biometric" class="panel">
     <div class="card">
       <div class="section-head">
-        <div><h2>Configurar Lector de Huella</h2><span class="muted">El lector guarda y verifica las huellas. Qubiq solo recibe quién marcó y a qué hora, y registra la asistencia solo.</span></div>
+        <div><h2>Configurar Lector de Huella</h2><span class="muted" id="bioIntro">El lector guarda y verifica las huellas. Qubiq solo recibe quién marcó y a qué hora, y registra la asistencia solo.</span></div>
         <button id="bioAddDevice" type="button" class="btn">Agregar lector</button>
       </div>
       <div id="bioDevices" class="bio-devices"><p class="muted">Cargando...</p></div>
@@ -239,12 +240,16 @@
         <form id="companySettingsForm" class="card">
           <div class="section-head"><div><h2>Identidad del negocio</h2><span class="muted">Datos que identifican esta instalación de Qubiq Control.</span></div></div>
           <label>Nombre del negocio<input name="businessName" maxlength="160" required></label>
-          <label>Sucursal<input name="branchName" maxlength="160" required></label>
+          <label>Sucursal de esta computadora<input name="branchName" maxlength="160" required></label>
           <label>Administrador<input name="adminName" maxlength="120" required></label>
           <label>Correo del administrador<input name="adminEmail" type="email" maxlength="160"></label>
           <button class="btn">Guardar identidad</button><div id="companySettingsMsg" class="message"></div>
         </form>
-        <div class="card" id="branchesCard">
+        <div class="card" id="centralCard">
+          <div class="section-head"><div><h2>Conexión entre sucursales</h2><span class="muted">Una computadora hace de central y recibe las marcaciones de las demás.</span></div></div>
+          <div id="centralBody"><p class="muted">Cargando...</p></div>
+        </div>
+        <div class="card central-only" id="branchesCard">
           <div class="section-head"><div><h2>Sucursales</h2><span class="muted">Los locales del negocio. Es la base para llevar la asistencia de varias sucursales en un solo sistema.</span></div></div>
           <div class="table-wrap">
             <table class="bio-table">
@@ -267,15 +272,15 @@
         </div>
       </div>
       <div class="settings-stack">
-        <form id="mailSettingsForm" class="card"><h2>Correo automático de asistencia</h2><p class="muted">Cuenta independiente para enviar confirmaciones automáticas. Las credenciales se guardan cifradas en esta instalación.</p>
+        <form id="mailSettingsForm" class="card central-only"><h2>Correo automático de asistencia</h2><p class="muted">Cuenta independiente para enviar confirmaciones automáticas. Las credenciales se guardan cifradas en esta instalación.</p>
           <label>Proveedor<select id="mailProviderSettings"><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="custom">Otro proveedor</option></select></label>
           <label>Servidor SMTP<input name="host" placeholder="smtp.gmail.com" maxlength="200"></label>
           <div class="form-row"><label>Puerto<input name="port" type="number" min="1" max="65535" value="587"></label><label>Seguridad<select name="secure"><option value="false">STARTTLS / 587</option><option value="true">SSL / 465</option></select></label></div>
           <label>Correo remitente<input name="user" type="email" maxlength="200" placeholder="asistencia@empresa.com"></label><label>Contraseña de aplicación<input name="pass" type="password" maxlength="300" autocomplete="new-password" placeholder="Obligatoria la primera vez"></label>
           <label>Remitente visible<input name="from" type="email" maxlength="200"></label><button class="btn">Guardar correo automático</button><div id="mailSettingsMsg" class="message"></div>
         </form>
-        <div class="card"><h2>Google Workspace</h2><p class="muted">Conectá Drive y Sheets con la cuenta del negocio.</p><div id="settingsGoogleAccount" class="info-box">Sin conectar</div><div class="button-row"><button id="settingsGoogleConnect" type="button" class="btn">Conectar Google</button><button id="settingsMailTest" type="button" class="btn secondary">Probar correo</button></div></div>
-        <form id="kioskSettingsForm" class="card"><h2>Acceso de Recepción</h2><p class="muted">Un acceso aparte para que el personal vea solo el QR de asistencia, sin poder entrar al resto del sistema.</p>
+        <div class="card central-only"><h2>Google Workspace</h2><p class="muted">Conectá Drive y Sheets con la cuenta del negocio.</p><div id="settingsGoogleAccount" class="info-box">Sin conectar</div><div class="button-row"><button id="settingsGoogleConnect" type="button" class="btn">Conectar Google</button><button id="settingsMailTest" type="button" class="btn secondary">Probar correo</button></div></div>
+        <form id="kioskSettingsForm" class="card central-only"><h2>Acceso de Recepción</h2><p class="muted">Un acceso aparte para que el personal vea solo el QR de asistencia, sin poder entrar al resto del sistema.</p>
           <div id="kioskInfo" class="info-box"><span id="kioskInfoDot" class="status-dot"></span> <span id="kioskInfoText">No configurado.</span></div>
           <label>Contraseña de Recepción<input name="kioskPassword" type="password" maxlength="200" autocomplete="new-password" placeholder="Mínimo 6 caracteres"></label>
           <div class="button-row"><button class="btn">Guardar contraseña</button><button id="kioskDisable" type="button" class="btn danger">Desactivar acceso</button></div>
@@ -377,7 +382,7 @@
 <div id="bioDeviceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bioDeviceTitle">
   <form id="bioDeviceForm" class="card modal-card" autocomplete="off">
     <div class="section-head">
-      <div><h2 id="bioDeviceTitle">Agregar lector</h2><span class="muted">El lector debe estar en la misma red que esta computadora.</span></div>
+      <div><h2 id="bioDeviceTitle">Agregar lector</h2><span class="muted" id="bioDeviceHint">El lector debe estar en la misma red que esta computadora.</span></div>
       <button type="button" id="closeBioDeviceModal" class="icon-btn" aria-label="Cerrar">×</button>
     </div>
     <input type="hidden" name="id">

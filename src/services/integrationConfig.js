@@ -80,3 +80,21 @@ export function publicIntegrationStatus() {
     }
   };
 }
+
+// Conexión de esta computadora con la central (modo sucursal). La clave se guarda cifrada, igual que el correo.
+export function getCentralLink() {
+  const saved = readAll().central;
+  if (!saved || !saved.url || !saved.key) return null;
+  return { url: String(saved.url), key: String(saved.key), connectedAt: saved.connectedAt || null,
+    branchName: saved.branchName || '', branchCode: saved.branchCode || '', centralName: saved.centralName || '',
+    agentName: saved.agentName || '' };
+}
+
+export function saveCentralLink(link) {
+  const all = readAll();
+  if (link) writeAll({ ...all, central: link });
+  else {
+    delete all.central;
+    writeAll(all);
+  }
+}

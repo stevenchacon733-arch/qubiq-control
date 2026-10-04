@@ -20,6 +20,9 @@ import { assertNotLocked, guardConfig, registerFailure, resetFailures } from './
 import { backupStatus, createBackup, startBackupScheduler, stopBackupScheduler } from './services/backup.js';
 import { checkLicense, licenseGate, licenseStatus, saveLicenseKey, startLicenseScheduler, stopLicenseScheduler } from './services/license.js';
 import { createBranch, listBranches, setBranchActive, updateBranch } from './services/branches.js';
+import { CentralError, connectToCentral, disconnectFromCentral, flushNow, isAgentMode, linkStatus, retryErrors, startLinkWorker, stopLinkWorker } from './services/branchLink.js';
+import { createAgent, deleteAgent, listAgents, rotateAgentKey, setAgentActive, updateAgent } from './services/central.js';
+import { agentListenerStatus, stopAgentListener, syncAgentListener } from './agentApi.js';
 import {
   biometricSummary, createDevice, diagnostics, employeeBiometrics, enrollEmployee, listDevices, listEvents, listLogs,
   listMappings, setDeviceActive, setMapping, startBiometricWorker, stopBiometricWorker, syncDevice, testConnection, updateDevice
@@ -149,7 +152,9 @@ api.get('/status', (_req, res) => res.json({
   lanUrl: lanAddress(),
   today: localDate(),
   qrTtlSeconds: config.qrTtlSeconds,
-  company: getCompanyProfile()
+  company: getCompanyProfile(),
+  // "sucursal": esta computadora le envía sus marcaciones a una central y no registra asistencia por su cuenta.
+  branchMode: isAgentMode()
 }));
 api.get('/branding', (_req, res) => {
   const company = getCompanyProfile();
@@ -328,6 +333,7 @@ api.post('/admin/backup', requireAdmin, async (_req, res) => {
 });
 api.get('/admin/employees', requireAdmin, (_req, res) => res.json(listEmployees()));
 api.post('/admin/employees', requireAdmin, (req, res) => {
+  if (isAgentMode()) return res.status(409).json({ error: 'Esta computadora es una sucursal conectada: los empleados se crean en la central.' });
   const gate = licenseGate();
   if (gate.blockCreateEmployee) return res.status(402).json({ error: gate.banner?.text || 'La licencia no está activa.' });
   try { res.status(201).json({ id: createEmployee(req.body) }); }
@@ -433,7 +439,11 @@ api.post('/admin/sync/google-sheets', requireAdmin, async (req, res) => {
 // Todo vive bajo /api/admin: solo responde desde la computadora Qubiq y con sesión de Administrador.
 const bioRoute = (handler) => async (req, res) => {
   try { res.json(await handler(req)); }
-  catch (error) { res.status(error.status || 400).json({ error: error.message }); }
+  catch (error) {
+    // Un error que viene de la central (clave rechazada, sin conexión) no es un problema de la sesión de acá.
+    const status = error instanceof CentralError ? 502 : (error.status || 400);
+    res.status(status).json({ error: error.message, code: error.code });
+  }
 };
 api.get('/admin/biometric/devices', requireAdmin, bioRoute(() => listDevices()));
 api.post('/admin/biometric/devices', requireAdmin, bioRoute((req) => createDevice(req.body)));
@@ -457,10 +467,39 @@ api.post('/admin/branches', requireAdmin, bioRoute((req) => createBranch(req.bod
 api.patch('/admin/branches/:id', requireAdmin, bioRoute((req) => updateBranch(req.params.id, req.body)));
 api.patch('/admin/branches/:id/active', requireAdmin, bioRoute((req) => setBranchActive(req.params.id, Boolean(req.body.active))));
 
+// ---------- Conexión entre sucursales ----------
+// Una computadora es central (recibe marcaciones de las demás) o sucursal (envía las suyas). Todo esto vive bajo
+// /api/admin; lo que usan las otras sucursales está en el puerto de recepción (src/agentApi.js).
+const lanAgentUrl = () => {
+  try { return `http://${new URL(lanAddress()).hostname}:${config.agentPort}`; } catch { return ''; }
+};
+const centralOverview = () => {
+  const link = linkStatus();
+  const agents = listAgents();
+  return { role: link.connected ? 'branch' : (agents.length ? 'central' : 'single'),
+    link, agents, listener: agentListenerStatus(), lanUrl: lanAgentUrl() };
+};
+const withListener = async (result) => { await syncAgentListener(); return result; };
+api.get('/admin/central', requireAdmin, bioRoute(() => centralOverview()));
+api.post('/admin/central/agents', requireAdmin, bioRoute((req) => withListener(createAgent(req.body))));
+api.patch('/admin/central/agents/:id', requireAdmin, bioRoute((req) => updateAgent(req.params.id, req.body)));
+api.patch('/admin/central/agents/:id/active', requireAdmin, bioRoute((req) => withListener(setAgentActive(req.params.id, Boolean(req.body.active)))));
+api.post('/admin/central/agents/:id/key', requireAdmin, bioRoute((req) => rotateAgentKey(req.params.id)));
+api.delete('/admin/central/agents/:id', requireAdmin, bioRoute((req) => withListener(deleteAgent(req.params.id))));
+api.put('/admin/central/link', requireAdmin, bioRoute((req) => connectToCentral(req.body)));
+api.delete('/admin/central/link', requireAdmin, bioRoute((req) => disconnectFromCentral({ force: req.query.force === 'true' })));
+api.post('/admin/central/link/flush', requireAdmin, bioRoute(() => flushNow()));
+api.post('/admin/central/link/retry', requireAdmin, bioRoute(() => retryErrors()));
+
+// En una sucursal conectada no se marca con QR ni en la computadora: esas marcas quedarían solo acá y nunca
+// llegarían a la planilla de la central.
+const BRANCH_MARK = 'Esta computadora es una sucursal conectada a la central: acá se marca con el lector de huella.';
+
 // Corrección manual de una jornada (olvido de salida, marca equivocada o de prueba).
 api.put('/admin/attendance/day', requireAdmin, bioRoute((req) => correctAttendanceDay(req.body)));
 
 api.get('/admin/qr.png', requireAdminOrKiosk, async (_req, res) => {
+  if (isAgentMode()) return res.status(409).json({ error: BRANCH_MARK });
   const gate = licenseGate();
   if (gate.blockQrGeneration) return res.status(402).json({ error: gate.banner?.text || 'La licencia no está activa.' });
   const token = createAttendanceToken();
@@ -503,6 +542,7 @@ function handleMark(req, res, { tokenPayload = null, source }) {
 }
 
 api.post('/attendance/mark', requireLan, (req, res) => {
+  if (isAgentMode()) return res.status(409).json({ error: BRANCH_MARK });
   const payload = verifyToken(req.body.token, 'attendance');
   if (!payload) return res.status(400).json({ error: 'El QR venció. Escanee el QR que aparece actualmente.' });
   return handleMark(req, res, { tokenPayload: payload, source: 'QR' });
@@ -512,6 +552,7 @@ api.post('/attendance/mark', requireLan, (req, res) => {
 // computadora Qubiq (no está en LAN_SURFACE), y exige sesión de Administrador o Recepción. Respeta el mismo bloqueo de
 // licencia que el QR: si no, sería una forma de seguir marcando con la licencia vencida.
 api.post('/admin/attendance/mark', requireAdminOrKiosk, (req, res) => {
+  if (isAgentMode()) return res.status(409).json({ error: BRANCH_MARK });
   const gate = licenseGate();
   if (gate.blockQrGeneration) return res.status(402).json({ error: gate.banner?.text || 'La licencia no está activa.' });
   return handleMark(req, res, { source: 'APP' });
@@ -538,7 +579,10 @@ export function startServer({ quiet = false } = {}) {
       startBackupScheduler();
       startLicenseScheduler();
       startBiometricWorker();
-      server.once('close', () => { stopMailWorker(); stopBackupScheduler(); stopLicenseScheduler(); stopBiometricWorker(); });
+      startLinkWorker();
+      syncAgentListener();
+      server.once('close', () => { stopMailWorker(); stopBackupScheduler(); stopLicenseScheduler(); stopBiometricWorker();
+        stopLinkWorker(); stopAgentListener(); });
       resolve(server);
     });
     server.once('error', reject);

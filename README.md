@@ -63,6 +63,31 @@ real:** antes de publicar un release que toque esta parte, probá contra el lect
 ZKBio Time.Net puede seguir instalado para administrar el lector, pero que **no** borre las marcaciones al
 descargarlas: Qubiq las necesita en el lector.
 
+## Varias sucursales
+
+El mismo programa sirve para un solo local o para varios. En *Configuración → Conexión entre sucursales* cada
+computadora elige su papel:
+
+- **Central:** tiene los empleados, los horarios y la planilla, y recibe las marcaciones de las demás. Crea una
+  clave para cada sucursal (se muestra una sola vez; en la base queda solo su hash).
+- **Sucursal:** se conecta con la dirección de la central y esa clave. Desde ahí solo maneja su lector: cada
+  marcación viaja a la central, que decide si es entrada o salida. Los empleados y sus IDs se consultan a la
+  central, así que una persona usa el mismo ID y marca en cualquier sucursal.
+
+Lo que hay que saber:
+
+- **Sin internet no se pierde nada.** La sucursal guarda cada marcación en una cola en disco y la reenvía sola
+  hasta que la central la confirma. La central reconoce cada marcación por un identificador fijo, así que
+  reenviarla nunca la duplica.
+- **Lo único que se publica a internet es el puerto 3221 de la central** (el de recepción). El panel (3220) sigue
+  respondiendo solo en la propia computadora.
+- **La central puede ser cualquier computadora del negocio**, siempre encendida. Si se apaga, las sucursales
+  siguen marcando y todo entra cuando vuelve.
+
+El detalle, las decisiones y lo que falta están en [`docs/multisucursal.md`](docs/multisucursal.md).
+`npm run test:multibranch` levanta una central y una sucursal de verdad, con lectores simulados, y prueba el
+envío, los duplicados, los cortes de conexión, los reinicios y una jornada con entrada en un local y salida en otro.
+
 ## Horas trabajadas y horas extra
 
 **Una sola regla de redondeo.** La hora de entrada y la de salida se redondean cada una a la hora entera (30

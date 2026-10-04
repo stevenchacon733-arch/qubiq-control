@@ -1,6 +1,7 @@
 import { mountAppMark } from '/app-mark.js';
 import { mountBiometric } from '/biometric.js';
 import { mountBranches } from '/branches.js';
+import { mountCentral } from '/central.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -20,7 +21,7 @@ async function api(url, options = {}) {
     if (!skipAuthRedirect) $('#login').classList.remove('hidden');
     throw new Error(data.error || 'Sesión requerida.');
   }
-  if (!response.ok) throw new Error(data.error || 'Error en la solicitud.');
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Error en la solicitud.'), { code: data.code || '' });
   return data;
 }
 
@@ -139,6 +140,14 @@ async function boot() {
     return;
   }
 
+  // Sucursal conectada a una central: acá solo se maneja el lector. Empleados, horarios y planilla están allá.
+  if (appStatus.branchMode) {
+    document.body.classList.add('branch-mode');
+    $('nav.tabs .tab[data-tab="biometric"]').click();
+    await Promise.all([loadSystem(), central.load()]);
+    return;
+  }
+
   await reloadAdminData();
   refreshQr();
 }
@@ -217,7 +226,7 @@ function renderLicense(license) {
 
   const banner = $('#licenseBanner');
   if (banner) {
-    if (license.banner) {
+    if (license.banner && !appStatus?.branchMode) {
       banner.className = `license-banner ${license.banner.type}`;
       banner.textContent = license.banner.text;
       banner.classList.remove('hidden');
@@ -361,6 +370,7 @@ async function loadEmployees() {
 
 function refreshQr() {
   clearInterval(window.qrInterval);
+  if (appStatus?.branchMode) return;
   if (currentSystem?.license?.blockQrGeneration) {
     $('#qr').removeAttribute('src');
     $('#qrTimer').textContent = '--';
@@ -400,6 +410,7 @@ $$('nav.tabs .tab').forEach((button) => {
     if (button.dataset.tab === 'settings') {
       loadSettings().catch((error) => toast(error.message, false));
       branches.load().catch((error) => toast(error.message, false));
+      central.load().catch((error) => toast(error.message, false));
     }
     if (button.dataset.tab === 'biometric') biometric.show();
   };
@@ -807,12 +818,13 @@ document.addEventListener('keydown', (event) => {
 // "Hoy" se actualiza sola: una marca con huella o con QR aparece sin tocar "Actualizar".
 setInterval(() => {
   const idle = $('#login').classList.contains('hidden') && $('#dashboard').classList.contains('active')
-    && $('#dayModal').classList.contains('hidden') && !document.hidden;
+    && $('#dayModal').classList.contains('hidden') && !document.hidden && !appStatus?.branchMode;
   if (idle) loadOverview().catch(() => {});
 }, 10000);
 
 const biometric = mountBiometric({
   $, $$, api, msg, clearMsg, toast, esc,
+  branchMode: () => Boolean(appStatus?.branchMode),
   businessName: () => {
     const name = appStatus?.company?.businessName;
     return name && name !== 'Mi negocio' ? name : '';
@@ -821,6 +833,7 @@ const biometric = mountBiometric({
 });
 
 const branches = mountBranches({ $, $$, api, msg, clearMsg, toast, esc });
+const central = mountCentral({ $, $$, api, msg, clearMsg, toast, esc, branchMode: () => Boolean(appStatus?.branchMode) });
 
 boot().catch((error) => {
   console.error(error);

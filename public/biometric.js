@@ -13,11 +13,16 @@ const EVENT_LABELS = {
   UNMAPPED: ['warn', 'Sin empleado vinculado'],
   REJECTED: ['bad', 'No aplicada'],
   IGNORED: ['', 'Ignorada'],
-  INVALID: ['bad', 'Inválida']
+  INVALID: ['bad', 'Inválida'],
+  // Modo sucursal: la marcación no se registra acá, viaja a la central.
+  QUEUED: ['warn', 'En cola para la central'],
+  SENT: ['good', 'Enviada a la central'],
+  SENT_PENDING: ['warn', 'Enviada, sin aplicar'],
+  SEND_ERROR: ['bad', 'Rechazada por la central']
 };
 const REFRESH_MS = 5000;
 
-export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEmployees }) {
+export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEmployees, branchMode = () => false }) {
   let devices = [];
   let busy = false;
   let loaded = false;
@@ -74,25 +79,37 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
       ? `<div class="message show">${device.unlinkedEvents} marcación(es) de IDs sin empleado vinculado. Vinculá el ID abajo y se aplican solas.</div>`
       : '';
     const disabled = off ? 'disabled' : '';
-    return `<article class="bio-device ${off ? 'off' : ''}" data-id="${device.id}">
-      <div class="bio-device-head">
-        <div><h3>${esc(device.name)}</h3><span class="muted">${device.branchName ? `${esc(device.branchName)} (${esc(device.branchCode)}) · ` : ''}${esc(device.ip)}:${device.port}${device.location ? ` · ${esc(device.location)}` : ''}${device.serialNumber ? ` · Serie ${esc(device.serialNumber)}` : ''}</span></div>
-        <span class="bio-state ${tone}"><span class="status-dot ${tone}"></span>${label}</span>
-      </div>
-      <div class="bio-facts">
-        <div><span>Última sincronización</span><strong>${hour(device.lastSyncAt)}</strong></div>
-        <div><span>Marcaciones hoy</span><strong>${device.punchesToday}</strong></div>
-        <div><span>Empleados vinculados</span><strong>${device.linkedEmployees}</strong></div>
-        <div><span>Último contacto</span><strong>${hour(device.lastContactAt)}</strong></div>
-      </div>
-      ${error}${unlinked}
-      <div class="button-row">
-        <button type="button" class="btn secondary" data-act="test">Probar conexión</button>
+    // Lector de otra sucursal: llega a través de la computadora de esa sucursal, así que desde acá no se prueba
+    // ni se sincroniza; solo se le cambia el nombre o se lo desactiva.
+    const where = device.remote
+      ? `${device.agentName ? `Vía ${esc(device.agentName)}` : 'Otra sucursal'}${device.address ? ` · ${esc(device.address)}` : ''}`
+      : esc(device.address || `${device.ip}:${device.port}`);
+    const third = branchMode()
+      ? `<div><span>En cola para la central</span><strong>${device.queued || 0}</strong></div>`
+      : `<div><span>Empleados vinculados</span><strong>${device.linkedEmployees}</strong></div>`;
+    const buttons = device.remote
+      ? `<button type="button" class="btn secondary" data-act="configure">Configurar</button>
+        <button type="button" class="btn ${off ? 'secondary' : 'danger'}" data-act="toggle">${off ? 'Activar' : 'Desactivar'}</button>`
+      : `<button type="button" class="btn secondary" data-act="test">Probar conexión</button>
         <button type="button" class="btn" data-act="sync" ${disabled}>Sincronizar ahora</button>
         <button type="button" class="btn secondary" data-act="download" ${disabled}>Descargar marcaciones</button>
         <button type="button" class="btn secondary" data-act="diagnostics">Diagnóstico</button>
         <button type="button" class="btn secondary" data-act="configure">Configurar</button>
-        <button type="button" class="btn ${off ? 'secondary' : 'danger'}" data-act="toggle">${off ? 'Activar' : 'Desactivar'}</button>
+        <button type="button" class="btn ${off ? 'secondary' : 'danger'}" data-act="toggle">${off ? 'Activar' : 'Desactivar'}</button>`;
+    return `<article class="bio-device ${off ? 'off' : ''}" data-id="${device.id}">
+      <div class="bio-device-head">
+        <div><h3>${esc(device.name)}${device.remote ? ' <code class="branch-tag">otra sucursal</code>' : ''}</h3><span class="muted">${device.branchName && !branchMode() ? `${esc(device.branchName)} (${esc(device.branchCode)}) · ` : ''}${where}${device.location ? ` · ${esc(device.location)}` : ''}${device.serialNumber ? ` · Serie ${esc(device.serialNumber)}` : ''}</span></div>
+        <span class="bio-state ${tone}"><span class="status-dot ${tone}"></span>${label}</span>
+      </div>
+      <div class="bio-facts">
+        <div><span>${device.remote ? 'Última marcación recibida' : 'Última sincronización'}</span><strong>${hour(device.lastSyncAt)}</strong></div>
+        <div><span>Marcaciones hoy</span><strong>${device.punchesToday}</strong></div>
+        ${third}
+        <div><span>${device.remote ? 'Último reporte del lector' : 'Último contacto'}</span><strong>${hour(device.lastContactAt)}</strong></div>
+      </div>
+      ${error}${unlinked}
+      <div class="button-row">
+        ${buttons}
       </div>
       ${diagnosticsHtml(diagnostics.get(device.id))}
     </article>`;
@@ -120,7 +137,10 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
     const device = devices.find((item) => item.id === id);
     if (!device || busy) return;
     if (action === 'configure') return openDeviceModal(device);
-    if (action === 'toggle' && device.active && !window.confirm(`¿Desactivar ${device.name}? Qubiq dejará de consultarlo; las huellas y marcaciones siguen guardadas en el lector.`)) return;
+    const warning = device.remote
+      ? `¿Desactivar ${device.name}? La central deja de aceptar sus marcaciones; quedan guardadas en esa sucursal hasta que lo vuelvas a activar.`
+      : `¿Desactivar ${device.name}? Qubiq dejará de consultarlo; las huellas y marcaciones siguen guardadas en el lector.`;
+    if (action === 'toggle' && device.active && !window.confirm(warning)) return;
     busy = true;
     const original = button.textContent;
     button.disabled = true;
@@ -177,18 +197,27 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
     form.reset();
     clearMsg($('#bioDeviceMsg'));
     $('#bioDeviceTitle').textContent = device ? `Configurar ${device.name}` : 'Agregar lector';
+    // De un lector de otra sucursal solo se cambia el nombre, la ubicación y el tiempo de doble toque.
+    const remote = Boolean(device?.remote);
+    for (const field of ['ip', 'port', 'deviceNumber', 'commKey', 'branchId', 'pollSeconds']) {
+      form.elements[field].disabled = remote;
+      form.elements[field].closest('label').classList.toggle('hidden', remote || (field === 'branchId' && branchMode()));
+    }
+    $('#bioDeviceHint').textContent = remote
+      ? 'Lector de otra sucursal: la IP y la clave se configuran en la computadora de esa sucursal.'
+      : 'El lector debe estar en la misma red que esta computadora.';
     form.elements.id.value = device?.id || '';
     suggestedName = '';
     try { branchOptions = (await api('/api/admin/branches')).filter((item) => item.active || item.id === device?.branchId); }
     catch { branchOptions = []; }
     form.elements.branchId.innerHTML = branchOptions.map((item) => `<option value="${item.id}">${esc(item.name)} (${esc(item.code)})</option>`).join('');
     if (device?.branchId) form.elements.branchId.value = String(device.branchId);
-    $('#bioSerialRow').classList.toggle('hidden', !device?.serialNumber);
+    $('#bioSerialRow').classList.toggle('hidden', !device?.serialNumber || Boolean(device?.remote));
     $('#bioSerialText').textContent = `Se cambió el aparato por otro (el registrado es el de serie ${device?.serialNumber || ''})`;
     form.elements.name.value = device?.name || '';
     if (!device) suggestName();
-    form.elements.ip.value = device?.ip || '';
-    form.elements.port.value = device?.port || 4370;
+    form.elements.ip.value = device?.remote ? '' : (device?.ip || '');
+    form.elements.port.value = device?.remote ? '' : (device?.port || 4370);
     form.elements.deviceNumber.value = device?.deviceNumber || 1;
     form.elements.location.value = device?.location || '';
     form.elements.pollSeconds.value = device?.pollSeconds || 30;
@@ -216,6 +245,7 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
         ? await api(`/api/admin/biometric/devices/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
         : await api('/api/admin/biometric/devices', { method: 'POST', body: JSON.stringify(body) });
       closeDeviceModal();
+      if (saved.remote) { toast(`${saved.name} guardado.`); await refresh(true); return; }
       toast(`${saved.name} guardado. Comprobando la conexión...`);
       await refresh(true);
       const test = await api(`/api/admin/biometric/devices/${saved.id}/test`, { method: 'POST', body: '{}' });
@@ -234,15 +264,21 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
       body.innerHTML = '<tr><td colspan="5">Agregá un lector para vincular empleados.</td></tr>';
       return;
     }
-    const data = await api(`/api/admin/biometric/devices/${deviceId}/mappings`);
+    let data;
+    try { data = await api(`/api/admin/biometric/devices/${deviceId}/mappings`); }
+    catch (error) {
+      // En una sucursal la lista de empleados se consulta a la central: puede no haber conexión en este momento.
+      body.innerHTML = `<tr><td colspan="5">${esc(error.message)}</td></tr>`;
+      return;
+    }
     body.innerHTML = data.rows.map((row) => `
-      <tr data-employee="${row.employeeId}">
+      <tr data-employee="${esc(row.employeeId)}">
         <td><strong>${esc(row.name)}</strong>${row.active ? '' : '<br><small class="muted">Inactivo</small>'}</td>
         <td><code>${esc(row.employeeCode)}</code></td>
         <td><div class="bio-id"><input inputmode="numeric" maxlength="9" value="${esc(row.zkUserId || '')}" placeholder="${row.sharedId ? `Usa el ${esc(row.sharedId)}` : 'Sin ID'}" aria-label="ID biométrico de ${esc(row.name)}"><button type="button" class="mini-btn bio-save-id">Guardar</button></div></td>
         <td>${row.zkUserId ? '<span class="badge good">Vinculado</span>' : '<span class="badge warn">Sin vincular</span>'}</td>
         <td><button type="button" class="btn secondary bio-finger" data-name="${esc(row.name)}">Asignar o cambiar huella</button></td>
-      </tr>`).join('') || '<tr><td colspan="5">No hay empleados.</td></tr>';
+      </tr>`).join('') || `<tr><td colspan="5">${branchMode() ? 'La central todavía no tiene empleados.' : 'No hay empleados.'}</td></tr>`;
     $$('#bioMapBody input').forEach((input) => {
       input.addEventListener('input', () => { input.value = input.value.replace(/\D+/g, ''); });
     });
@@ -312,6 +348,10 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
     const form = $('#fingerForm');
     const device = fingerDevices.find((item) => String(item.deviceId) === form.elements.deviceId.value);
     form.elements.zkUserId.value = device?.zkUserId || device?.suggestedId || '';
+    // La huella de un lector de otra sucursal se registra allá, parado frente a ese lector.
+    $('#fingerEnroll').disabled = !device || Boolean(device.remote);
+    if (device?.remote) msg($('#fingerMsg'), 'Ese lector está en otra sucursal: la huella se registra desde la computadora de esa sucursal. Acá podés dejar guardado el ID.', true);
+    else if (device) clearMsg($('#fingerMsg'));
   }
 
   async function openFinger(employeeId, name) {
@@ -326,12 +366,11 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
       fingerDevices = [];
       msg($('#fingerMsg'), error.message);
     }
-    form.elements.deviceId.innerHTML = fingerDevices.map((item) => `<option value="${item.deviceId}">${esc(item.deviceName)}</option>`).join('');
+    form.elements.deviceId.innerHTML = fingerDevices.map((item) => `<option value="${item.deviceId}">${esc(item.deviceName)}${item.remote ? ' (otra sucursal)' : ''}</option>`).join('');
     const ready = fingerDevices.length > 0;
-    $('#fingerEnroll').disabled = !ready;
     $('#fingerSaveId').disabled = !ready;
-    if (!ready) msg($('#fingerMsg'), 'Primero agregá el lector en la pestaña "Lector de Huella".');
     fillFingerId();
+    if (!ready) msg($('#fingerMsg'), 'Primero agregá el lector en la pestaña "Lector de Huella".');
   }
 
   async function describeEmployee(employeeId) {
@@ -414,7 +453,10 @@ export function mountBiometric({ $, $$, api, msg, clearMsg, toast, esc, reloadEm
 
   return {
     renderSummary,
-    show: () => refresh(true).catch((error) => toast(error.message, false)),
+    show: () => {
+      if (branchMode()) $('#bioIntro').textContent = 'El lector guarda y verifica las huellas. Esta computadora solo le pasa a la central quién marcó y a qué hora; la asistencia se registra allá.';
+      return refresh(true).catch((error) => toast(error.message, false));
+    },
     openFinger,
     describeEmployee
   };

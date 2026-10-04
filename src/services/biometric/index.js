@@ -8,6 +8,7 @@ import { activeEmployeeById, registerAttendance } from '../attendance.js';
 import { queueAttendanceConfirmation } from '../mail.js';
 import { licenseGate } from '../license.js';
 import { ensureDefaultBranch } from '../branches.js';
+import { centralRequest, enqueueEvent, isAgentMode, kickLink, listQueue, setDeviceReporter } from '../branchLink.js';
 import { zktecoDriver } from './zktecoDriver.js';
 
 const drivers = new Map([[zktecoDriver.id, zktecoDriver]]);
@@ -21,6 +22,11 @@ const FUTURE_TOLERANCE_MS = 10 * 60 * 1000;
 // cerrada, así que se deja para corregir a mano.
 const LATE_REORDER_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const MAIL_RECENT_MS = 10 * 60 * 1000;
+// Lector de otra sucursal (llega a través de la computadora de esa sucursal): cuánto silencio se tolera.
+const REMOTE_AGENT_SILENT_MS = 3 * 60 * 1000;
+const MAX_READERS_PER_AGENT = 10;
+const REMOTE_ONLY = 'Este lector está en otra sucursal: se maneja desde la computadora de esa sucursal.';
+const apiError = (status, code, message) => Object.assign(new Error(message), { status, code });
 
 function state(id) {
   const key = Number(id);
@@ -56,6 +62,15 @@ function getRow(id) {
   return row;
 }
 
+function assertLocal(row) {
+  if (row.agent_id) throw new Error(REMOTE_ONLY);
+}
+
+const agentOf = (row) => (row.agent_id
+  ? db.prepare('SELECT id, name, active, last_seen_at FROM branch_agents WHERE id = ?').get(row.agent_id) || null
+  : null);
+const agentSilent = (agent) => !agent?.last_seen_at || Date.now() - Date.parse(agent.last_seen_at) > REMOTE_AGENT_SILENT_MS;
+
 function connection(row) {
   let commKey = '';
   if (row.comm_key_sealed) {
@@ -74,9 +89,20 @@ function checkSerial(row, serial) {
   if (known) {
     throw new Error(`En ${row.ip}:${row.port} responde otro aparato (serie ${found}); el registrado es ${known}. Si lo reemplazaste, abrí Configurar y marcá "Se cambió el aparato".`);
   }
-  const other = db.prepare('SELECT name FROM biometric_devices WHERE serial_number = ? AND id <> ?').get(found, row.id);
-  if (other) throw new Error(`Este aparato (serie ${found}) ya está registrado como "${other.name}". No se puede agregar dos veces.`);
+  const other = db.prepare('SELECT id, name, agent_id, active FROM biometric_devices WHERE serial_number = ? AND id <> ?').get(found, row.id);
+  if (other && !releaseSerial(other, row.name)) {
+    throw new Error(`Este aparato (serie ${found}) ya está registrado como "${other.name}"${other.agent_id ? ', en otra sucursal. Si se mudó, primero desactivá ese lector.' : '. No se puede agregar dos veces.'}`);
+  }
   db.prepare('UPDATE biometric_devices SET serial_number = ? WHERE id = ?').run(found, row.id);
+}
+
+// Un lector de otra sucursal que el administrador desactivó suelta su número de serie: así el aparato se puede
+// mudar a otra sucursal o conectarse directo a la central. Sus marcaciones ya registradas quedan como estaban.
+function releaseSerial(holder, claimedBy) {
+  if (!holder.agent_id || holder.active) return false;
+  db.prepare("UPDATE biometric_devices SET serial_number = '', ip = ? WHERE id = ?").run(`liberado:${holder.id}`, holder.id);
+  audit('SYSTEM', 'BIOMETRIC_DEVICE_RELEASED', 'BIOMETRIC_DEVICE', holder.id, { name: holder.name, claimedBy });
+  return true;
 }
 
 // Identificador único de una marcación de huella. Se calcula con el número de serie del lector, el ID del usuario
@@ -132,6 +158,12 @@ function driverFor(row) {
 
 function statusOf(row) {
   if (!row.active) return 'DISABLED';
+  if (row.agent_id) {
+    // Lo que se sabe de un lector remoto es lo que reporta la computadora de su sucursal.
+    const agent = agentOf(row);
+    if (!agent?.last_seen_at || !row.last_contact_at) return 'PENDING';
+    return !agent.active || agentSilent(agent) || row.consecutive_failures > 0 ? 'DISCONNECTED' : 'CONNECTED';
+  }
   if (state(row.id).syncing) return 'SYNCING';
   if (row.consecutive_failures > 0) return 'DISCONNECTED';
   if (!row.last_contact_at) return 'PENDING';
@@ -144,9 +176,16 @@ function publicDevice(row) {
   let info = {};
   try { info = JSON.parse(row.info_json || '{}'); } catch { info = {}; }
   const branch = row.branch_id ? db.prepare('SELECT name, code FROM branches WHERE id = ?').get(row.branch_id) : null;
+  const agent = agentOf(row);
+  const silent = Boolean(agent && row.active && agent.last_seen_at && (agentSilent(agent) || !agent.active));
+  const forwarding = isAgentMode();
   return {
     id: row.id,
     name: row.name,
+    remote: Boolean(row.agent_id),
+    agentName: agent?.name || '',
+    agentLastSeenAt: agent?.last_seen_at || null,
+    address: row.agent_id ? clean(info.address, 60) : `${row.ip}:${row.port}`,
     branchId: row.branch_id ?? null,
     branchName: branch?.name || '',
     branchCode: branch?.code || '',
@@ -163,12 +202,18 @@ function publicDevice(row) {
     status: statusOf(row),
     lastContactAt: row.last_contact_at,
     lastSyncAt: row.last_sync_at,
-    lastError: row.last_error,
+    lastError: silent
+      ? `La computadora de esa sucursal (${agent.name}) dejó de reportarse: puede estar apagada o sin internet. Las marcaciones quedan guardadas allá y llegan solas cuando vuelva.`
+      : row.last_error,
     lastErrorAt: row.last_error_at,
     consecutiveFailures: row.consecutive_failures,
     info,
-    punchesToday: db.prepare('SELECT COUNT(*) AS n FROM biometric_events WHERE device_id = ? AND punched_local LIKE ?')
+    // En modo sucursal las marcaciones no se registran acá: se cuentan las que pasaron por la cola de envío.
+    punchesToday: db.prepare(`SELECT COUNT(*) AS n FROM ${forwarding ? 'pending_events' : 'biometric_events'} WHERE device_id = ? AND punched_local LIKE ?`)
       .get(row.id, `${today}%`).n,
+    queued: forwarding
+      ? db.prepare("SELECT COUNT(*) AS n FROM pending_events WHERE device_id = ? AND status IN ('pending','syncing')").get(row.id).n
+      : 0,
     linkedEmployees: db.prepare(`SELECT COUNT(*) AS n FROM employee_biometric_map m JOIN employees e ON e.id = m.employee_id
       WHERE m.device_id = ? AND COALESCE(e.archived, 0) = 0`).get(row.id).n,
     unlinkedEvents: db.prepare("SELECT COUNT(*) AS n FROM biometric_events WHERE device_id = ? AND status = 'UNMAPPED'").get(row.id).n
@@ -260,8 +305,24 @@ export function createDevice(input) {
   } catch (error) { throw friendlyUnique(error); }
 }
 
+// De un lector remoto la central solo decide el nombre con que lo muestra y el tiempo de doble toque: la IP, el
+// puerto y la clave se configuran en la computadora de su sucursal.
+function updateRemoteDevice(current, input) {
+  const name = clean(input.name ?? current.name, 80);
+  if (name.length < 2) throw new Error('Indique un nombre para el lector.');
+  const location = clean(input.location ?? current.location, 120);
+  const minGapSeconds = intInRange(input.minGapSeconds, current.min_gap_seconds, 0, 3600, 'El tiempo anti-doble marcación');
+  try {
+    db.prepare('UPDATE biometric_devices SET name = ?, location = ?, min_gap_seconds = ?, updated_at = ? WHERE id = ?')
+      .run(name, location, minGapSeconds, nowIso(), current.id);
+  } catch (error) { throw friendlyUnique(error); }
+  audit('ADMIN', 'UPDATE', 'BIOMETRIC_DEVICE', current.id, { name, remote: true });
+  return publicDevice(getRow(current.id));
+}
+
 export function updateDevice(id, input) {
   const current = getRow(id);
+  if (current.agent_id) return updateRemoteDevice(current, input);
   const device = normalizeDevice(input, current);
   const moved = device.ip !== current.ip || device.port !== current.port;
   try {
@@ -294,7 +355,54 @@ export function setDeviceActive(id, active) {
 
 // ---------- Vínculo empleado ↔ ID del lector ----------
 
+// ---------- Modo sucursal: los empleados y sus IDs viven en la central ----------
+
+function describeForCentral(row) {
+  let info = {};
+  try { info = JSON.parse(row.info_json || '{}'); } catch { info = {}; }
+  return { serial: row.serial_number, name: row.name, address: `${row.ip}:${row.port}`, location: row.location,
+    model: info.model || '', firmware: info.firmware || '', minGapSeconds: row.min_gap_seconds, importSince: row.import_since };
+}
+
+function readerForCentral(deviceId) {
+  const row = getRow(deviceId);
+  if (!row.serial_number) throw new Error('Todavía no se conoce el número de serie de este lector. Tocá "Probar conexión" y volvé a intentar.');
+  return row;
+}
+
+async function centralDirectory(row) {
+  const data = await centralRequest('/api/agent/employees', { method: 'POST', body: { device: describeForCentral(row) } });
+  // Lo que llega de la central se vuelve a pasar a limpio antes de mostrarlo.
+  const id = (value) => (/^[1-9]\d{0,8}$/.test(String(value ?? '')) ? String(value) : '');
+  const rows = (Array.isArray(data.rows) ? data.rows : []).slice(0, 5000)
+    .map((entry) => ({ employeeId: Number(entry?.employeeId) || 0, employeeCode: clean(entry?.employeeCode, 20), name: clean(entry?.name, 120),
+      active: Boolean(entry?.active), zkUserId: id(entry?.zkUserId), sharedId: id(entry?.sharedId) }))
+    .filter((entry) => Number.isInteger(entry.employeeId) && entry.employeeId > 0);
+  return { deviceId: row.id, deviceName: row.name, suggestedId: id(data.suggestedId), rows };
+}
+
+function centralSetMapping(row, employeeId, zkUserId) {
+  return centralRequest('/api/agent/mappings', { method: 'PUT',
+    body: { device: describeForCentral(row), employeeId: Number(employeeId), zkUserId: String(zkUserId ?? '').trim() } });
+}
+
+async function centralEmployeeBiometrics(employeeId) {
+  const list = [];
+  for (const row of db.prepare('SELECT * FROM biometric_devices WHERE agent_id IS NULL ORDER BY active DESC, name').all()) {
+    const item = { deviceId: row.id, deviceName: row.name, active: Boolean(row.active), remote: false, zkUserId: '', suggestedId: '' };
+    if (row.serial_number) {
+      const directory = await centralDirectory(row);
+      const person = directory.rows.find((entry) => Number(entry.employeeId) === Number(employeeId));
+      item.zkUserId = person?.zkUserId || '';
+      item.suggestedId = person?.zkUserId || person?.sharedId || directory.suggestedId;
+    }
+    list.push(item);
+  }
+  return list;
+}
+
 export function listMappings(deviceId) {
+  if (isAgentMode()) return centralDirectory(readerForCentral(deviceId));
   const device = getRow(deviceId);
   const rows = db.prepare(`SELECT e.id AS employeeId, e.employee_code AS employeeCode, e.name, e.active,
         m.zk_user_id AS zkUserId
@@ -322,6 +430,7 @@ function idOnOtherReaders(employeeId, deviceId) {
 }
 
 export function setMapping({ employeeId, deviceId, zkUserId }) {
+  if (isAgentMode()) return centralSetMapping(readerForCentral(deviceId), employeeId, zkUserId);
   const device = getRow(deviceId);
   const employee = db.prepare('SELECT id, name FROM employees WHERE id = ? AND COALESCE(archived, 0) = 0').get(Number(employeeId));
   if (!employee) throw new Error('Empleado no encontrado.');
@@ -360,10 +469,11 @@ export function setMapping({ employeeId, deviceId, zkUserId }) {
 }
 
 export function employeeBiometrics(employeeId) {
-  return db.prepare(`SELECT d.id AS deviceId, d.name AS deviceName, d.active, m.zk_user_id AS zkUserId
+  if (isAgentMode()) return centralEmployeeBiometrics(employeeId);
+  return db.prepare(`SELECT d.id AS deviceId, d.name AS deviceName, d.active, m.zk_user_id AS zkUserId, d.agent_id AS agentId
       FROM biometric_devices d LEFT JOIN employee_biometric_map m ON m.device_id = d.id AND m.employee_id = ?
-      ORDER BY d.active DESC, d.name`).all(Number(employeeId))
-    .map((row) => ({ ...row, active: Boolean(row.active),
+      ORDER BY d.active DESC, (d.agent_id IS NOT NULL), d.name`).all(Number(employeeId))
+    .map(({ agentId, ...row }) => ({ ...row, active: Boolean(row.active), remote: Boolean(agentId),
       suggestedId: row.zkUserId || idOnOtherReaders(Number(employeeId), row.deviceId)?.id || nextFreeId() }));
 }
 
@@ -516,6 +626,7 @@ export function ingestEvents(deviceId, events, { full = false } = {}) {
     ? new Date(Date.parse(`${device.last_event_local.replace(' ', 'T')}Z`) - 48 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
     : null;
   const ordered = [...events].sort((a, b) => String(a.localStamp || '').localeCompare(String(b.localStamp || '')));
+  if (isAgentMode()) return queueEvents(device, ordered, watermark, summary);
   const insert = db.prepare(`INSERT INTO biometric_events(device_id, zk_user_id, punched_local, verify_status, punch_state,
       status, note, received_at, event_uuid, branch_id, source) VALUES(?, ?, ?, ?, ?, 'INVALID', '', ?, ?, ?, 'biometric')
       ON CONFLICT DO NOTHING`);
@@ -552,8 +663,37 @@ export function ingestEvents(deviceId, events, { full = false } = {}) {
   return summary;
 }
 
+// Modo sucursal: la marcación no se registra acá. Se guarda en la cola y sale hacia la central, que es la que
+// decide si es entrada o salida. Las anteriores a la activación del lector no se envían.
+function queueEvents(device, ordered, watermark, summary) {
+  if (!device.serial_number) throw new Error('El lector no informó su número de serie; sin eso sus marcaciones no se pueden enviar a la central.');
+  const since = Date.parse(device.import_since);
+  let newest = device.last_event_local || '';
+  summary.queued = 0;
+  for (const event of ordered) {
+    const userId = String(event.userId ?? '').replace(/[^\x21-\x7E]/g, '').slice(0, 24);
+    const local = event.valid && event.localStamp ? event.localStamp : '';
+    const occurred = local && userId ? zonedToDate(local) : null;
+    if (!occurred) { summary.invalid += 1; continue; }
+    if ((watermark && local < watermark) || occurred.getTime() < since) { summary.duplicates += 1; continue; }
+    const verify = Number(event.verifyStatus) || 0;
+    const punch = Number(event.punchState) || 0;
+    const added = enqueueEvent(device, { uuid: eventUuid(device.serial_number, userId, local, verify, punch), userId, local, verify, punch });
+    if (added) { summary.imported += 1; summary.queued += 1; } else summary.duplicates += 1;
+    // Una marca con fecha futura (reloj del lector adelantado) se envía para que se vea el problema, pero no
+    // mueve la marca de "hasta dónde ya se leyó": si la moviera, las marcas reales de después no saldrían.
+    if (local > newest && occurred.getTime() <= Date.now() + FUTURE_TOLERANCE_MS) newest = local;
+  }
+  if (newest && newest !== device.last_event_local) {
+    db.prepare('UPDATE biometric_devices SET last_event_local = ? WHERE id = ?').run(newest, device.id);
+  }
+  if (summary.queued) kickLink();
+  return summary;
+}
+
 function describe(summary) {
   const parts = [`${summary.received} eventos recibidos`, `${summary.imported} nuevos`, `${summary.duplicates} existentes`];
+  if (summary.queued) parts.push(`${summary.queued} en cola para la central`);
   if (summary.unmapped) parts.push(`${summary.unmapped} sin empleado vinculado`);
   if (summary.rejected) parts.push(`${summary.rejected} no aplicados`);
   if (summary.invalid) parts.push(`${summary.invalid} inválidos`);
@@ -565,11 +705,13 @@ function describe(summary) {
 export function syncDevice(id, { full = false, manual = false, action = 'Sincronización' } = {}) {
   return exclusive(id, async () => {
     const row = getRow(id);
+    assertLocal(row);
     if (!row.active && !manual) return { skipped: true };
     const st = state(row.id);
     // Misma regla que el QR: con la licencia bloqueada no se registran marcaciones. Las huellas quedan
-    // guardadas en el lector y entran solas cuando la licencia vuelve a estar activa.
-    const gate = licenseGate();
+    // guardadas en el lector y entran solas cuando la licencia vuelve a estar activa. En modo sucursal la
+    // licencia que cuenta es la de la central, que es la que registra.
+    const gate = isAgentMode() ? { blockQrGeneration: false } : licenseGate();
     if (gate.blockQrGeneration) {
       st.nextPollAt = Date.now() + 60 * 1000;
       const message = gate.banner?.text || 'La licencia no está activa.';
@@ -620,6 +762,7 @@ export function syncDevice(id, { full = false, manual = false, action = 'Sincron
 export function testConnection(id) {
   return exclusive(id, async () => {
     const row = getRow(id);
+    assertLocal(row);
     const started = Date.now();
     try {
       const result = await driverFor(row).testConnection(connection(row));
@@ -639,6 +782,7 @@ export function testConnection(id) {
 export function diagnostics(id) {
   return exclusive(id, async () => {
     const row = getRow(id);
+    assertLocal(row);
     const started = Date.now();
     const base = { address: `${row.ip}:${row.port}`, checkedAt: nowIso() };
     try {
@@ -669,38 +813,51 @@ export function diagnostics(id) {
 
 const asciiName = (name) => String(name).normalize('NFD').replace(/[^\x20-\x7E]/g, '').trim().slice(0, 23);
 
-// Asigna el ID, crea el usuario en el lector y lo deja pidiendo el dedo.
-export async function enrollEmployee({ employeeId, deviceId, zkUserId, replace = false }) {
-  const device = getRow(deviceId);
-  if (!device.active) throw new Error('Este lector está desactivado.');
-  const employee = db.prepare('SELECT id, name FROM employees WHERE id = ? AND COALESCE(archived, 0) = 0').get(Number(employeeId));
-  if (!employee) throw new Error('Empleado no encontrado.');
-  const current = db.prepare('SELECT zk_user_id FROM employee_biometric_map WHERE employee_id = ? AND device_id = ?')
-    .get(employee.id, device.id)?.zk_user_id;
-  const wanted = String(zkUserId ?? '').trim() || current || idOnOtherReaders(employee.id, device.id)?.id || nextFreeId();
-  if (wanted !== current) setMapping({ employeeId: employee.id, deviceId: device.id, zkUserId: wanted });
-
+// Crea el usuario en el lector y lo deja pidiendo el dedo. La huella queda solo en el lector.
+function enrollOnReader(device, { userId, name, replace, employeeId }) {
   return exclusive(device.id, async () => {
     const started = Date.now();
     const st = state(device.id);
     st.syncing = true;
     try {
       const result = await driverFor(device).enrollUser(connection(device), {
-        userId: wanted, name: asciiName(employee.name), replace: replace === true || replace === 'true' });
+        userId, name: asciiName(name), replace: replace === true || replace === 'true' });
       markContact(device);
       addLog(device, { action: 'Registro de huella', result: result.enrolled ? 'OK' : 'ERROR',
-        message: result.enrolled ? `Huella registrada para ${employee.name} (ID ${wanted})`
-          : `No se completó el registro de ${employee.name} (ID ${wanted})`, durationMs: Date.now() - started });
-      audit('ADMIN', 'BIOMETRIC_ENROLL', 'EMPLOYEE', employee.id, { deviceId: device.id, zkUserId: wanted, enrolled: result.enrolled });
-      return { zkUserId: wanted, enrolled: result.enrolled, outcome: result.outcome, userCreated: result.created };
+        message: result.enrolled ? `Huella registrada para ${name} (ID ${userId})`
+          : `No se completó el registro de ${name} (ID ${userId})`, durationMs: Date.now() - started });
+      audit('ADMIN', 'BIOMETRIC_ENROLL', 'EMPLOYEE', employeeId, { deviceId: device.id, zkUserId: userId, enrolled: result.enrolled });
+      return { zkUserId: userId, enrolled: result.enrolled, outcome: result.outcome, userCreated: result.created };
     } catch (error) {
       const message = String(error.message).slice(0, 300);
       addLog(device, { action: 'Registro de huella', result: 'ERROR', message, durationMs: Date.now() - started });
-      return { zkUserId: wanted, enrolled: false, outcome: 'ERROR', error: message };
+      return { zkUserId: userId, enrolled: false, outcome: 'ERROR', error: message };
     } finally {
       st.syncing = false;
     }
   });
+}
+
+// Asigna el ID y registra la huella. En modo sucursal el empleado y su ID se consultan y se guardan en la central.
+export async function enrollEmployee({ employeeId, deviceId, zkUserId, replace = false }) {
+  const device = getRow(deviceId);
+  assertLocal(device);
+  if (!device.active) throw new Error('Este lector está desactivado.');
+  if (isAgentMode()) {
+    const directory = await centralDirectory(readerForCentral(device.id));
+    const person = directory.rows.find((entry) => Number(entry.employeeId) === Number(employeeId));
+    if (!person) throw new Error('Empleado no encontrado en la central.');
+    const chosen = String(zkUserId ?? '').trim() || person.zkUserId || person.sharedId || directory.suggestedId;
+    if (chosen !== person.zkUserId) await centralSetMapping(device, person.employeeId, chosen);
+    return enrollOnReader(device, { userId: chosen, name: person.name, replace, employeeId: person.employeeId });
+  }
+  const employee = db.prepare('SELECT id, name FROM employees WHERE id = ? AND COALESCE(archived, 0) = 0').get(Number(employeeId));
+  if (!employee) throw new Error('Empleado no encontrado.');
+  const current = db.prepare('SELECT zk_user_id FROM employee_biometric_map WHERE employee_id = ? AND device_id = ?')
+    .get(employee.id, device.id)?.zk_user_id;
+  const wanted = String(zkUserId ?? '').trim() || current || idOnOtherReaders(employee.id, device.id)?.id || nextFreeId();
+  if (wanted !== current) setMapping({ employeeId: employee.id, deviceId: device.id, zkUserId: wanted });
+  return enrollOnReader(device, { userId: wanted, name: employee.name, replace, employeeId: employee.id });
 }
 
 export function listLogs({ deviceId = null, limit = 100 } = {}) {
@@ -711,6 +868,7 @@ export function listLogs({ deviceId = null, limit = 100 } = {}) {
 }
 
 export function listEvents({ deviceId = null, limit = 100 } = {}) {
+  if (isAgentMode()) return listQueue({ deviceId, limit });
   const max = Math.min(500, Math.max(1, Number(limit) || 100));
   const sql = `SELECT b.id, b.event_uuid AS eventUuid, b.device_id AS deviceId, d.name AS deviceName, br.code AS branchCode, br.name AS branchName,
       b.zk_user_id AS zkUserId, b.punched_local AS punchedLocal, b.status, b.note, e.name AS employee
@@ -722,12 +880,125 @@ export function listEvents({ deviceId = null, limit = 100 } = {}) {
     : db.prepare(`${sql} ORDER BY b.id DESC LIMIT ?`).all(max);
 }
 
+// ---------- Central: lectores de otras sucursales ----------
+
+// Un lector de otra sucursal se reconoce por su número de serie y queda atado a la computadora (agente) que lo
+// reportó primero: otra sucursal no puede enviar marcaciones en su nombre.
+export function resolveRemoteDevice(agent, info = {}) {
+  const serial = clean(info?.serial, 40);
+  if (!/^[\x21-\x7E]{3,40}$/.test(serial)) throw apiError(400, 'bad_device', 'Falta el número de serie del lector.');
+  const details = JSON.stringify({ serial, address: clean(info.address, 60), model: clean(info.model, 60), firmware: clean(info.firmware, 60) });
+  const existing = db.prepare('SELECT * FROM biometric_devices WHERE serial_number = ?').get(serial);
+  if (existing?.agent_id === agent.id) {
+    if (existing.info_json !== details) db.prepare('UPDATE biometric_devices SET info_json = ? WHERE id = ?').run(details, existing.id);
+    return existing;
+  }
+  if (existing && !releaseSerial(existing, agent.name)) {
+    throw apiError(403, 'device_not_authorized', 'Ese lector ya está registrado en la central desde otro lugar. Si se mudó de sucursal, primero hay que desactivarlo en la central.');
+  }
+  if (db.prepare("SELECT COUNT(*) AS n FROM biometric_devices WHERE agent_id = ? AND serial_number <> ''").get(agent.id).n >= MAX_READERS_PER_AGENT) {
+    throw apiError(403, 'too_many_devices', `Esta sucursal ya tiene ${MAX_READERS_PER_AGENT} lectores registrados en la central.`);
+  }
+  const branch = db.prepare('SELECT id, code FROM branches WHERE id = ?').get(agent.branch_id);
+  if (!branch) throw apiError(403, 'branch_inactive', 'La sucursal de esta computadora ya no existe en la central.');
+  const wanted = clean(info.name, 70).length >= 2 ? clean(info.name, 70) : `ZK-${branch.code}-01`;
+  const taken = db.prepare('SELECT 1 FROM biometric_devices WHERE name = ?');
+  let name = wanted;
+  for (let n = 1; taken.get(name); n += 1) name = `${wanted} · ${branch.code}${n > 1 ? ` ${n}` : ''}`;
+  let minGap = Number(info.minGapSeconds);
+  if (!Number.isInteger(minGap) || minGap < 0 || minGap > 3600) minGap = 120;
+  // Desde cuándo se aceptan sus marcaciones: desde que la sucursal activó el lector, pero nunca antes del día en
+  // que se creó la clave de esa sucursal. Así, lo que quedó en cola mientras la central estuvo apagada entra.
+  const floor = zonedToDate(`${localDate(new Date(agent.created_at))} 00:00:00`).getTime();
+  const reported = Date.parse(info.importSince);
+  const since = new Date(Math.max(floor, Number.isFinite(reported) ? Math.min(reported, Date.now()) : floor)).toISOString();
+  const now = nowIso();
+  const created = db.prepare(`INSERT INTO biometric_devices(name, ip, port, location, min_gap_seconds, import_since, branch_id,
+      serial_number, agent_id, info_json, created_at, updated_at) VALUES(?, ?, 4370, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(name, `serie:${serial}`, clean(info.location, 120), minGap, since, branch.id, serial, agent.id, details, now, now);
+  audit('SYSTEM', 'CREATE', 'BIOMETRIC_DEVICE', created.lastInsertRowid, { name, serial, agent: agent.name, remote: true });
+  return getRow(created.lastInsertRowid);
+}
+
+// Latido de una sucursal: cómo está cada uno de sus lectores, según su propia computadora.
+export function reportRemoteDevices(agent, devices) {
+  if (!Array.isArray(devices)) return [];
+  const report = [];
+  const seen = [];
+  for (const info of devices.slice(0, MAX_READERS_PER_AGENT * 2)) {
+    try {
+      const row = resolveRemoteDevice(agent, info);
+      seen.push(row.id);
+      const failures = Math.max(0, Math.min(Number(info.consecutiveFailures) || 0, 100000));
+      const error = failures ? clean(info.lastError, 300) : '';
+      // "Último contacto" se anota con el reloj de la central: el de la otra computadora puede estar corrido.
+      const healthy = !failures && Number.isFinite(Date.parse(info.lastContactAt));
+      db.prepare(`UPDATE biometric_devices SET last_contact_at = CASE WHEN ? = 1 THEN ? ELSE last_contact_at END, consecutive_failures = ?,
+          last_error = ?, last_error_at = CASE WHEN ? <> '' THEN ? ELSE last_error_at END WHERE id = ?`)
+        .run(healthy ? 1 : 0, nowIso(), failures, error, error, nowIso(), row.id);
+      report.push({ serial: row.serial_number, name: row.name, active: Boolean(row.active) });
+    } catch (error) {
+      report.push({ serial: clean(info?.serial, 40), error: error.message });
+    }
+  }
+  // Un lector que la sucursal dejó de nombrar (lo desactivó o lo quitó) no puede seguir figurando conectado.
+  const others = db.prepare("SELECT id FROM biometric_devices WHERE agent_id = ? AND serial_number <> '' AND consecutive_failures = 0").all(agent.id)
+    .filter((row) => !seen.includes(row.id));
+  for (const row of others) {
+    db.prepare('UPDATE biometric_devices SET consecutive_failures = 1, last_error = ?, last_error_at = ? WHERE id = ?')
+      .run('La sucursal dejó de reportar este lector: puede estar desactivado allá.', nowIso(), row.id);
+  }
+  return report;
+}
+
+// Marcaciones que manda la computadora de otra sucursal. Mismo camino que las de un lector local: se guardan una
+// sola vez (por identificador) y pasan por el mismo motor. Devuelve, por cada una, si se registró ahora o si ya
+// estaba; la sucursal no la da por enviada hasta recibir esa respuesta.
+export function ingestRemoteEvents(deviceId, events) {
+  const device = getRow(deviceId);
+  const insert = db.prepare(`INSERT INTO biometric_events(device_id, zk_user_id, punched_local, verify_status, punch_state,
+      status, note, received_at, event_uuid, branch_id, source) VALUES(?, ?, ?, ?, ?, 'INVALID', '', ?, ?, ?, 'biometric')
+      ON CONFLICT DO NOTHING`);
+  const stored = db.prepare(`SELECT b.status, b.note, e.name FROM biometric_events b LEFT JOIN employees e ON e.id = b.employee_id
+      WHERE b.event_uuid = ? OR (b.device_id = ? AND b.zk_user_id = ? AND b.punched_local = ? AND b.verify_status = ? AND b.punch_state = ?)
+      LIMIT 1`);
+  const nameOf = db.prepare('SELECT name FROM employees WHERE id = ?');
+  const results = [];
+  let newest = device.last_event_local || '';
+  for (const event of [...events].sort((a, b) => a.local.localeCompare(b.local))) {
+    const decision = transaction(() => {
+      const inserted = insert.run(device.id, event.userId, event.local, event.verify, event.punch, nowIso(), event.uuid, device.branch_id ?? null);
+      if (!inserted.changes) return null;
+      const outcome = decide({ zk_user_id: event.userId, punched_local: event.local }, device);
+      applyDecision(Number(inserted.lastInsertRowid), outcome);
+      return outcome;
+    });
+    if (!decision) {
+      const before = stored.get(event.uuid, device.id, event.userId, event.local, event.verify, event.punch);
+      results.push({ event_uuid: event.uuid, status: 'already_registered', outcome: String(before?.status || 'APPLIED').toLowerCase(),
+        detail: before?.note || '', employee: before?.name || '' });
+      continue;
+    }
+    results.push({ event_uuid: event.uuid, status: 'registered', outcome: decision.status.toLowerCase(), detail: decision.note,
+      employee: decision.employeeId ? (nameOf.get(decision.employeeId)?.name || '') : '' });
+    if (decision.status !== 'INVALID' && event.local > newest) newest = event.local;
+    notify(decision);
+  }
+  db.prepare('UPDATE biometric_devices SET last_sync_at = ?, last_event_local = ? WHERE id = ?').run(nowIso(), newest || null, device.id);
+  return results;
+}
+
+// Lo que esta computadora, en modo sucursal, le cuenta a la central sobre sus lectores.
+setDeviceReporter(() => db.prepare("SELECT * FROM biometric_devices WHERE agent_id IS NULL AND active = 1 AND serial_number <> ''").all()
+  .map((row) => ({ ...describeForCentral(row), lastContactAt: row.last_contact_at, lastError: row.last_error,
+    consecutiveFailures: row.consecutive_failures })));
+
 // ---------- Agente en segundo plano ----------
 
 function tick() {
   if (stopping) return;
   let rows = [];
-  try { rows = db.prepare('SELECT id FROM biometric_devices WHERE active = 1').all(); }
+  try { rows = db.prepare('SELECT id FROM biometric_devices WHERE active = 1 AND agent_id IS NULL').all(); }
   catch { return; } // la base se está cerrando
   for (const row of rows) {
     const st = state(row.id);
