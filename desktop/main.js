@@ -66,7 +66,7 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     show: false,
-    backgroundColor: '#F4F7FB',
+    backgroundColor: '#0B0B0D',
     title: 'Qubiq Control',
     icon: path.join(appRoot(), 'build', 'icon.png'),
     autoHideMenuBar: true,
